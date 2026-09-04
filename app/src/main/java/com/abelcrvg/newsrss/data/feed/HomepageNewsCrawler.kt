@@ -57,7 +57,6 @@ class HomepageNewsCrawler {
         val urlLower = url.lowercase()
         var score = 0
 
-        // Strong signals that the link belongs to an editorial/news card.
         if (article != null) score += 10
         if (link.closest("[itemtype*=Article]") != null) score += 9
         if (link.closest("[class*=card], [class*=story], [class*=headline], [class*=noticia], [class*=materia]") != null) score += 5
@@ -70,10 +69,6 @@ class HomepageNewsCrawler {
         if (context.selectFirst("time") != null) score += 2
         if (contextText.contains("agora") || contextText.contains("min atrás") || contextText.contains("hora atrás")) score += 2
 
-        // Navigation is detected structurally, not by searching the entire main text.
-        // The previous implementation searched contextText for words such as
-        // "instagram" and "youtube". On a large <main>, those words can occur
-        // elsewhere on the page and incorrectly rejected every news link.
         if (isNavigationLike(link, urlLower)) score -= 15
         if (urlLower.contains("/tag/") || urlLower.contains("/tags/") ||
             urlLower.contains("/categoria/") || urlLower.contains("/category/")) score -= 10
@@ -89,9 +84,9 @@ class HomepageNewsCrawler {
         val publishedAt = context.selectFirst("time[datetime]")?.attr("datetime")?.let(::parseDate)
             ?: context.selectFirst("time")?.text()?.let(::parseDate)
 
-        val summary = context.select("p")
-            .map { it.text().replace(Regex("\\s+"), " ").trim() }
-            .firstOrNull { it.length >= 30 && it != title }
+        val summary = article?.select("p")
+            ?.map { it.text().replace(Regex("\\s+"), " ").trim() }
+            ?.firstOrNull { it.length >= 30 && it != title }
 
         return Candidate(
             item = FeedItem(
@@ -109,25 +104,28 @@ class HomepageNewsCrawler {
 
     private fun extractTitle(link: Element): String {
         val candidates = listOf(
+            link.selectFirst("h1, h2, h3, h4, h5")?.text().orEmpty(),
             link.text(),
             link.attr("aria-label"),
             link.attr("title"),
-            link.selectFirst("h1, h2, h3, h4, h5")?.text().orEmpty(),
             link.selectFirst("img")?.attr("alt").orEmpty()
         )
 
+        // Prefer a real heading/label that already looks like a headline.
+        // This avoids rejecting cards whose <a> contains the headline plus
+        // metadata, author, timestamp and other text.
         return candidates
             .asSequence()
             .map { it.replace(Regex("\\s+"), " ").trim() }
-            .filter { it.isNotBlank() }
-            .maxByOrNull { it.length.coerceAtMost(MAX_TITLE_LENGTH) }
+            .firstOrNull { it.length in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH }
             .orEmpty()
     }
 
     private fun isValidUrl(url: String, baseHost: String): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
         val host = uri.host?.removePrefix("www.") ?: return false
-        if (uri.scheme !in listOf("http", "https") || host != baseHost) return false
+        val samePortal = host == baseHost || host.endsWith(".$baseHost")
+        if (uri.scheme !in listOf("http", "https") || !samePortal) return false
         if (uri.fragment != null || uri.path.isNullOrBlank() || uri.path == "/") return false
         return true
     }
