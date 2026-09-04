@@ -31,7 +31,7 @@ import com.abelcrvg.newsrss.core.model.ArticleBlock
 import com.abelcrvg.newsrss.core.model.FeedSource
 import com.abelcrvg.newsrss.core.source.SourceRegistry
 import com.abelcrvg.newsrss.data.extraction.JsoupArticleExtractor
-import com.abelcrvg.newsrss.data.feed.JsoupFeedReader
+import com.abelcrvg.newsrss.data.feed.SmartFeedReader
 import com.abelcrvg.newsrss.ui.theme.NewsRSSTheme
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -66,7 +66,7 @@ private fun NewsRSSApp() {
         scope.launch {
             val results = coroutineScope {
                 sources.filter { it.enabled }.map { source ->
-                    async { source to JsoupFeedReader().read(source) }
+                    async { source to SmartFeedReader().read(source) }
                 }.awaitAll()
             }
             val successful = results.flatMap { (source, result) ->
@@ -103,7 +103,6 @@ private fun NewsRSSApp() {
         refresh()
     }
 
-    // Every time the main screen is created, all configured sources are refreshed.
     LaunchedEffect(Unit) { refresh() }
 
     if (article != null) {
