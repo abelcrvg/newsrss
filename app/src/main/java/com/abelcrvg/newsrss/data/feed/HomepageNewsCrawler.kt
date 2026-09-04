@@ -22,14 +22,22 @@ class HomepageNewsCrawler {
                 .get()
 
             val baseHost = URI(source.siteUrl).host?.removePrefix("www.") ?: error("URL inválida")
-            val candidates = document.select("main a[href], article a[href], a[href]")
+
+            val candidates = document.select("a[href]")
                 .mapNotNull { link -> candidate(source, baseHost, link) }
                 .groupBy { it.item.url }
                 .values
                 .map { matches -> matches.maxBy { it.score }.item }
                 .distinctBy { it.url }
-                .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title })
+                .sortedWith(
+                    compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }
+                        .thenBy { it.title }
+                )
                 .take(MAX_ITEMS)
+
+            if (candidates.isEmpty()) {
+                error("Nenhuma notícia foi identificada na página de ${source.name}")
+            }
 
             candidates
         }
@@ -37,33 +45,53 @@ class HomepageNewsCrawler {
 
     private fun candidate(source: FeedSource, baseHost: String, link: Element): Candidate? {
         val url = link.absUrl("href").trim()
-        val title = link.text().replace(Regex("\\s+"), " ").trim()
-        if (!isValidUrl(url, baseHost) || title.length !in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH) return null
+        if (!isValidUrl(url, baseHost)) return null
 
-        val context = link.closest("article") ?: link.closest("main") ?: link.parent()
-        val contextText = context.text().lowercase()
+        val title = extractTitle(link)
+        if (title.length !in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH) return null
+
+        val article = link.closest("article")
+        val main = link.closest("main")
+        val context = article ?: main ?: link.parent()
+        val contextText = context.text().replace(Regex("\\s+"), " ").trim().lowercase()
         val urlLower = url.lowercase()
         var score = 0
 
-        if (link.closest("article") != null) score += 8
-        if (link.closest("main") != null) score += 3
-        if (urlLower.matches(Regex(".*(/noticia[s]?/|/news/|/story/|/materia[s]?/|/post/|/202[0-9]/).*"))) score += 7
-        if (urlLower.matches(Regex(".*\\d{4}/\\d{2}/\\d{2}.*"))) score += 5
+        // Strong signals that the link belongs to an editorial/news card.
+        if (article != null) score += 10
+        if (link.closest("[itemtype*=Article]") != null) score += 9
+        if (link.closest("[class*=card], [class*=story], [class*=headline], [class*=noticia], [class*=materia]") != null) score += 5
+        if (main != null) score += 2
+        if (urlLower.matches(Regex(".*(/noticia[s]?/|/news/|/story/|/materia[s]?/|/post/|/article/).*"))) score += 8
+        if (urlLower.matches(Regex(".*\\b20\\d{2}/\\d{2}/\\d{2}.*"))) score += 5
         if (title.length >= 45) score += 2
-        if (link.select("img").isNotEmpty() || link.closest("article")?.select("img")?.isNotEmpty() == true) score += 4
+        if (link.selectFirst("img") != null || article?.selectFirst("img") != null) score += 4
         if (context.selectFirst("time[datetime]") != null) score += 5
+        if (context.selectFirst("time") != null) score += 2
         if (contextText.contains("agora") || contextText.contains("min atrás") || contextText.contains("hora atrás")) score += 2
 
-        if (isNavigationLike(link, contextText, urlLower)) score -= 12
-        if (urlLower.contains("/tag/") || urlLower.contains("/tags/") || urlLower.contains("/categoria/") || urlLower.contains("/category/")) score -= 10
-        if (urlLower.contains("/busca") || urlLower.contains("/search") || urlLower.contains("/login") || urlLower.contains("/entrar")) score -= 20
+        // Navigation is detected structurally, not by searching the entire main text.
+        // The previous implementation searched contextText for words such as
+        // "instagram" and "youtube". On a large <main>, those words can occur
+        // elsewhere on the page and incorrectly rejected every news link.
+        if (isNavigationLike(link, urlLower)) score -= 15
+        if (urlLower.contains("/tag/") || urlLower.contains("/tags/") ||
+            urlLower.contains("/categoria/") || urlLower.contains("/category/")) score -= 10
+        if (urlLower.contains("/busca") || urlLower.contains("/search") ||
+            urlLower.contains("/login") || urlLower.contains("/entrar") ||
+            urlLower.contains("/newsletter") || urlLower.contains("/assine")) score -= 20
+
         if (score < MIN_SCORE) return null
 
-        val imageUrl = link.selectFirst("img")?.let { imageSource(it) }
-            ?: link.closest("article")?.selectFirst("img")?.let { imageSource(it) }
+        val imageUrl = link.selectFirst("img")?.let(::imageSource)
+            ?: article?.selectFirst("img")?.let(::imageSource)
+
         val publishedAt = context.selectFirst("time[datetime]")?.attr("datetime")?.let(::parseDate)
             ?: context.selectFirst("time")?.text()?.let(::parseDate)
-        val summary = context.select("p").map { it.text().trim() }.firstOrNull { it.length >= 30 }
+
+        val summary = context.select("p")
+            .map { it.text().replace(Regex("\\s+"), " ").trim() }
+            .firstOrNull { it.length >= 30 && it != title }
 
         return Candidate(
             item = FeedItem(
@@ -79,6 +107,23 @@ class HomepageNewsCrawler {
         )
     }
 
+    private fun extractTitle(link: Element): String {
+        val candidates = listOf(
+            link.text(),
+            link.attr("aria-label"),
+            link.attr("title"),
+            link.selectFirst("h1, h2, h3, h4, h5")?.text().orEmpty(),
+            link.selectFirst("img")?.attr("alt").orEmpty()
+        )
+
+        return candidates
+            .asSequence()
+            .map { it.replace(Regex("\\s+"), " ").trim() }
+            .filter { it.isNotBlank() }
+            .maxByOrNull { it.length.coerceAtMost(MAX_TITLE_LENGTH) }
+            .orEmpty()
+    }
+
     private fun isValidUrl(url: String, baseHost: String): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
         val host = uri.host?.removePrefix("www.") ?: return false
@@ -87,19 +132,37 @@ class HomepageNewsCrawler {
         return true
     }
 
-    private fun isNavigationLike(link: Element, contextText: String, url: String): Boolean {
-        val parentTags = link.parents().map { it.tagName() }.toSet()
-        if ("nav" in parentTags || "header" in parentTags || "footer" in parentTags || "aside" in parentTags) return true
-        return listOf("menu", "login", "entrar", "assine", "assinatura", "newsletter", "facebook", "instagram", "youtube", "twitter", "whatsapp").any {
-            contextText.contains(it) || url.contains(it)
-        }
+    private fun isNavigationLike(link: Element, url: String): Boolean {
+        val structuralParents = link.parents().toList()
+        if (structuralParents.any { it.tagName() in setOf("nav", "header", "footer", "aside") }) return true
+
+        val structuralText = (
+            listOf(link.className(), link.id()) +
+                structuralParents.take(4).flatMap { listOf(it.className(), it.id()) }
+            )
+            .joinToString(" ")
+            .lowercase()
+
+        if (listOf("menu", "navigation", "breadcrumb", "social", "share", "login", "entrar", "newsletter").any {
+                structuralText.contains(it)
+            }) return true
+
+        return listOf(
+            "facebook", "instagram", "youtube", "twitter", "x.com", "whatsapp",
+            "login", "entrar", "assine", "assinatura"
+        ).any { url.contains(it) }
     }
 
     private fun imageSource(image: Element): String? {
-        val direct = listOf("src", "data-src", "data-lazy-src")
+        val direct = listOf("src", "data-src", "data-lazy-src", "data-original")
             .firstNotNullOfOrNull { attr -> image.attr(attr).takeIf { it.startsWith("http") } }
         if (direct != null) return direct
-        return image.attr("srcset").split(",").firstOrNull()?.trim()?.substringBefore(" ")?.takeIf { it.startsWith("http") }
+
+        return image.attr("srcset")
+            .split(",")
+            .asSequence()
+            .map { it.trim().substringBefore(" ") }
+            .firstOrNull { it.startsWith("http") }
     }
 
     private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf { it.isNotBlank() }?.let {
