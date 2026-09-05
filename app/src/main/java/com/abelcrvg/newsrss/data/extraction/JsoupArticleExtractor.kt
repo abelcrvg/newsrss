@@ -33,30 +33,33 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             ) ?: error("Article title not found")
 
             var blocks = if (theVerge) extractTheVergeBlocks(document) else emptyList()
-            var textLength = blocks.joinToString(" ") { textOf(it) }.length
+            var textLength = blocks.sumOf { textOf(it).length }
 
-            val root = findContentRoot(document, theVerge) ?: error("Article content not found")
-            val genericBlocks = extractBlocks(root, if (theVerge) 1 else 20)
-            val genericLength = genericBlocks.joinToString(" ") { textOf(it) }.length
-            if (genericLength > textLength) {
-                blocks = genericBlocks
-                textLength = genericLength
+            val candidates = buildContentCandidates(document, theVerge)
+            for (candidate in candidates.sortedByDescending(::score)) {
+                val candidateBlocks = extractBlocks(candidate, if (theVerge) 1 else 8)
+                val candidateLength = candidateBlocks.sumOf { textOf(it).length }
+                if (candidateLength > textLength) {
+                    blocks = candidateBlocks
+                    textLength = candidateLength
+                }
+                if (textLength >= MIN_CONTENT_LENGTH) break
             }
 
+            // Some publishers expose the article body in JSON-LD or meta description only.
+            // Use that text as a last-resort paragraph rather than rejecting an otherwise valid page.
             if (textLength < MIN_CONTENT_LENGTH) {
-                val alternatives = document.select(
-                    "article,main,[role=main],.article,.article-body,.article-content,.article__body,.story-body,.story-content,.post-content,.entry-content,.content-body,.materia-conteudo"
-                ).distinct()
-                for (candidate in alternatives.sortedByDescending(::score)) {
-                    val candidateBlocks = extractBlocks(candidate, if (theVerge) 1 else 20)
-                    val candidateLength = candidateBlocks.joinToString(" ") { textOf(it) }.length
-                    if (candidateLength > textLength) {
-                        blocks = candidateBlocks
-                        textLength = candidateLength
-                    }
-                    if (textLength >= MIN_CONTENT_LENGTH) break
+                val fallbackText = firstNonBlank(
+                    document.select("meta[name=description]").attr("content"),
+                    document.select("meta[property=og:description]").attr("content"),
+                    document.select("meta[name=twitter:description]").attr("content")
+                )
+                if (!fallbackText.isNullOrBlank() && fallbackText.length >= MIN_FALLBACK_LENGTH) {
+                    blocks = listOf(ArticleBlock.Paragraph(fallbackText))
+                    textLength = fallbackText.length
                 }
             }
+
             require(textLength >= MIN_CONTENT_LENGTH) { "Extracted content is too short" }
 
             Article(
@@ -86,7 +89,6 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun extractTheVergeBlocks(document: org.jsoup.nodes.Document): List<ArticleBlock> {
         val components = document.select(".duet--article--article-body-component")
         if (components.isEmpty()) return emptyList()
-
         val result = mutableListOf<ArticleBlock>()
         components.forEach { component ->
             extractBlocks(component, minParagraphLength = 1).forEach { block ->
@@ -103,21 +105,29 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         document.select("[hidden],[aria-hidden=true]").remove()
     }
 
-    private fun findContentRoot(document: org.jsoup.nodes.Document, theVerge: Boolean): Element? {
-        if (theVerge) {
-            document.select(".duet--article--article-body-component").firstOrNull()?.let { first ->
-                var parent = first.parent()
-                repeat(4) {
-                    if (parent != null && parent!!.select(".duet--article--article-body-component").size > 1) {
-                        return parent
-                    }
-                    parent = parent?.parent()
-                }
-            }
-        }
-        document.select("article").maxByOrNull(::score)?.let { return it }
-        document.select("main,[role=main],.article-body,.article-content,.article__body,.story-body,.story-content,.post-content,.entry-content,.content-body,.materia-conteudo").maxByOrNull(::score)?.let { return it }
-        return document.body().select("div,section").maxByOrNull(::score)
+    private fun buildContentCandidates(document: org.jsoup.nodes.Document, theVerge: Boolean): List<Element> {
+        val selectors = listOf(
+            "article",
+            "main",
+            "[role=main]",
+            ".article-body", ".article-content", ".article__body", ".article__content",
+            ".story-body", ".story-content", ".post-content", ".entry-content", ".content-body",
+            ".materia-conteudo", ".materia-corpo", ".article__text", ".article-text",
+            ".content", ".main-content", ".single-content", ".post-body", ".story-body-content",
+            "[itemprop=articleBody]"
+        )
+        val result = mutableListOf<Element>()
+        selectors.forEach { selector -> document.select(selector).forEach { if (it !in result) result += it } }
+        if (theVerge) document.select(".duet--article--article-body-component").forEach { if (it !in result) result += it }
+
+        // Last resort: choose text-dense div/section containers. This handles publishers
+        // that use generated CSS classes instead of stable article-body selectors.
+        document.select("div,section").asSequence()
+            .filter { it.select("p").size >= 2 && it.text().length >= 80 }
+            .sortedByDescending(::score)
+            .take(12)
+            .forEach { if (it !in result) result += it }
+        return result
     }
 
     private fun score(element: Element): Int =
@@ -148,11 +158,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             image.absUrl("data-flickity-lazyload")
         ) ?: return
         if (!src.startsWith("http://") && !src.startsWith("https://")) return
-        result += ArticleBlock.Image(
-            src,
-            caption?.trim()?.takeIf { it.isNotBlank() },
-            image.attr("alt").trim().takeIf { it.isNotBlank() }
-        )
+        result += ArticleBlock.Image(src, caption?.trim()?.takeIf { it.isNotBlank() }, image.attr("alt").trim().takeIf { it.isNotBlank() })
     }
 
     private fun extractAuthor(document: org.jsoup.nodes.Document): String? = firstNonBlank(
@@ -197,6 +203,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
 
     private companion object {
         const val MIN_CONTENT_LENGTH = 120
+        const val MIN_FALLBACK_LENGTH = 80
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36 NewsRSS/0.2"
         val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
     }
