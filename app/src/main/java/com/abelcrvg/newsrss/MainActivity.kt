@@ -6,48 +6,20 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
-import com.abelcrvg.newsrs.core.feed.FeedItem
+import com.abelcrvg.newsrss.core.feed.FeedItem
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
 import com.abelcrvg.newsrss.core.model.FeedSource
@@ -91,7 +63,7 @@ private fun NewsRSSApp() {
     var items by remember { mutableStateOf<List<FeedItem>>(emptyList()) }
     var article by remember { mutableStateOf<Article?>(null) }
     var currentItem by remember { mutableStateOf<FeedItem?>(null) }
-    var loading by remember { mutableStateOf(true) }
+    var loading by remember { mutableStateOf(false) }
     var opening by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var urlInput by remember { mutableStateOf("") }
@@ -190,10 +162,7 @@ private fun NewsRSSApp() {
         refresh()
     }
 
-    LaunchedEffect(Unit) {
-        loading = false
-        refresh()
-    }
+    LaunchedEffect(Unit) { refresh() }
 
     val visibleItems = remember(items, sources, selectedCategory, readUrls) {
         val unread = items.filterNot { it.url in readUrls }
@@ -379,13 +348,7 @@ private fun SourceManager(
         Text("Ative, desative ou altere a categoria de cada fonte.", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(14.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = urlInput,
-                onValueChange = onUrlChange,
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                label = { Text("Adicionar site") }
-            )
+            OutlinedTextField(value = urlInput, onValueChange = onUrlChange, modifier = Modifier.weight(1f), singleLine = true, label = { Text("Adicionar site") })
             Button(onClick = onAdd) { Text("Adicionar") }
         }
         sourceError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -420,12 +383,7 @@ private fun NewsCard(item: FeedItem, sources: List<FeedSource>, saved: Boolean, 
     Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column {
             item.imageUrl?.let { imageUrl ->
-                AsyncImage(
-                    model = imageUrl,
-                    contentDescription = item.title,
-                    modifier = Modifier.fillMaxWidth().height(190.dp),
-                    contentScale = ContentScale.Crop
-                )
+                AsyncImage(model = imageUrl, contentDescription = item.title, modifier = Modifier.fillMaxWidth().height(190.dp), contentScale = ContentScale.Crop)
             }
             Column(Modifier.padding(14.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -448,12 +406,7 @@ private fun NewsCard(item: FeedItem, sources: List<FeedSource>, saved: Boolean, 
 }
 
 @Composable
-private fun ReaderContent(
-    article: Article,
-    saved: Boolean,
-    onBack: () -> Unit,
-    onToggleSaved: () -> Unit
-) {
+private fun ReaderContent(article: Article, saved: Boolean, onBack: () -> Unit, onToggleSaved: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -463,48 +416,28 @@ private fun ReaderContent(
             )
         }
     ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
+        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onToggleSaved) {
-                        Text(if (saved) "Remover de Ler depois" else "🔖 Ler depois")
-                    }
+                    TextButton(onClick = onToggleSaved) { Text(if (saved) "Remover de Ler depois" else "🔖 Ler depois") }
                 }
             }
             item { Text(article.title, style = MaterialTheme.typography.headlineMedium) }
             article.subtitle?.let { subtitle -> item { Text(subtitle, style = MaterialTheme.typography.titleMedium) } }
             article.author?.let { author -> item { Text("Por $author", style = MaterialTheme.typography.labelLarge) } }
             article.publishedAt?.let { date -> item { Text(publishedLabel(date), style = MaterialTheme.typography.labelMedium) } }
-
             article.blocks.forEach { block ->
                 item {
                     when (block) {
                         is ArticleBlock.Paragraph -> Text(block.text, style = MaterialTheme.typography.bodyLarge)
-                        is ArticleBlock.Heading -> Text(
-                            block.text,
-                            style = if (block.level <= 2) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge
-                        )
+                        is ArticleBlock.Heading -> Text(block.text, style = if (block.level <= 2) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge)
                         is ArticleBlock.Image -> Column {
-                            AsyncImage(
-                                model = block.url,
-                                contentDescription = block.altText ?: block.caption,
-                                modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
-                                contentScale = ContentScale.FillWidth
-                            )
+                            AsyncImage(model = block.url, contentDescription = block.altText ?: block.caption, modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp), contentScale = ContentScale.FillWidth)
                             block.caption?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                         }
-                        is ArticleBlock.Quote -> Text(
-                            "“${block.text}”${block.author?.let { " — $it" } ?: ""}",
-                            style = MaterialTheme.typography.bodyLarge
-                        )
+                        is ArticleBlock.Quote -> Text("“${block.text}”${block.author?.let { " — $it" } ?: ""}", style = MaterialTheme.typography.bodyLarge)
                         is ArticleBlock.ListBlock -> Column {
-                            block.items.forEachIndexed { index, text ->
-                                Text(if (block.ordered) "${index + 1}. $text" else "• $text", style = MaterialTheme.typography.bodyLarge)
-                            }
+                            block.items.forEachIndexed { index, text -> Text(if (block.ordered) "${index + 1}. $text" else "• $text", style = MaterialTheme.typography.bodyLarge) }
                         }
                     }
                 }
@@ -513,8 +446,4 @@ private fun ReaderContent(
     }
 }
 
-private fun publishedLabel(value: Instant): String {
-    return value.atZone(ZoneId.systemDefault()).format(
-        DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.getDefault())
-    )
-}
+private fun publishedLabel(value: Instant): String = value.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.getDefault()))
