@@ -17,28 +17,24 @@ class HomepageNewsCrawler {
         runCatching {
             val document = Jsoup.connect(source.siteUrl)
                 .userAgent(USER_AGENT)
+                .referrer(REFERRER)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                .header("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.7,en;q=0.5")
                 .timeout(TIMEOUT)
                 .followRedirects(true)
                 .get()
 
             val baseHost = URI(source.siteUrl).host?.removePrefix("www.") ?: error("URL inválida")
-
             val candidates = document.select("a[href]")
                 .mapNotNull { link -> candidate(source, baseHost, link) }
                 .groupBy { it.item.url }
                 .values
                 .map { matches -> matches.maxBy { it.score }.item }
                 .distinctBy { it.url }
-                .sortedWith(
-                    compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }
-                        .thenBy { it.title }
-                )
+                .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title })
                 .take(MAX_ITEMS)
 
-            if (candidates.isEmpty()) {
-                error("Nenhuma notícia foi identificada na página de ${source.name}")
-            }
-
+            if (candidates.isEmpty()) error("Nenhuma notícia foi identificada na página de ${source.name}")
             candidates
         }
     }
@@ -46,7 +42,6 @@ class HomepageNewsCrawler {
     private fun candidate(source: FeedSource, baseHost: String, link: Element): Candidate? {
         val url = link.absUrl("href").trim()
         if (!isValidUrl(url, baseHost)) return null
-
         val title = extractTitle(link)
         if (title.length !in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH) return null
 
@@ -58,11 +53,11 @@ class HomepageNewsCrawler {
         var score = 0
 
         if (article != null) score += 10
-        if (link.closest("[itemtype*=Article]") != null) score += 9
-        if (link.closest("[class*=card], [class*=story], [class*=headline], [class*=noticia], [class*=materia]") != null) score += 5
+        if (link.closest("[itemtype*=Article], [itemtype*=NewsArticle]") != null) score += 9
+        if (link.closest("[class*=card], [class*=story], [class*=headline], [class*=noticia], [class*=materia], [class*=post]") != null) score += 5
         if (main != null) score += 2
         if (urlLower.matches(Regex(".*(/noticia[s]?/|/news/|/story/|/materia[s]?/|/post/|/article/).*"))) score += 8
-        if (urlLower.matches(Regex(".*\\b20\\d{2}/\\d{2}/\\d{2}.*"))) score += 5
+        if (urlLower.matches(Regex(".*20\\d{2}/\\d{2}/\\d{2}.*"))) score += 5
         if (title.length >= 45) score += 2
         if (link.selectFirst("img") != null || article?.selectFirst("img") != null) score += 4
         if (context.selectFirst("time[datetime]") != null) score += 5
@@ -70,26 +65,16 @@ class HomepageNewsCrawler {
         if (contextText.contains("agora") || contextText.contains("min atrás") || contextText.contains("hora atrás")) score += 2
 
         if (isNavigationLike(link, urlLower)) score -= 15
-        if (urlLower.contains("/tag/") || urlLower.contains("/tags/") ||
-            urlLower.contains("/categoria/") || urlLower.contains("/category/")) score -= 10
-        if (urlLower.contains("/busca") || urlLower.contains("/search") ||
-            urlLower.contains("/login") || urlLower.contains("/entrar") ||
-            urlLower.contains("/newsletter") || urlLower.contains("/assine")) score -= 20
-
+        if (urlLower.contains("/tag/") || urlLower.contains("/tags/") || urlLower.contains("/categoria/") || urlLower.contains("/category/")) score -= 10
+        if (urlLower.contains("/busca") || urlLower.contains("/search") || urlLower.contains("/login") || urlLower.contains("/entrar") || urlLower.contains("/newsletter") || urlLower.contains("/assine")) score -= 20
         if (score < MIN_SCORE) return null
 
-        val imageUrl = link.selectFirst("img")?.let(::imageSource)
-            ?: article?.selectFirst("img")?.let(::imageSource)
-
-        val publishedAt = context.selectFirst("time[datetime]")?.attr("datetime")?.let(::parseDate)
-            ?: context.selectFirst("time")?.text()?.let(::parseDate)
-
-        val summary = article?.select("p")
-            ?.map { it.text().replace(Regex("\\s+"), " ").trim() }
-            ?.firstOrNull { it.length >= 30 && it != title }
+        val imageUrl = link.selectFirst("img")?.let(::imageSource) ?: article?.selectFirst("img")?.let(::imageSource)
+        val publishedAt = context.selectFirst("time[datetime]")?.attr("datetime")?.let(::parseDate) ?: context.selectFirst("time")?.text()?.let(::parseDate)
+        val summary = article?.select("p")?.map { it.text().replace(Regex("\\s+"), " ").trim() }?.firstOrNull { it.length >= 30 && it != title }
 
         return Candidate(
-            item = FeedItem(
+            FeedItem(
                 id = (source.id + url).hashCode().toUInt().toString(16),
                 sourceId = source.id,
                 title = title,
@@ -98,69 +83,40 @@ class HomepageNewsCrawler {
                 publishedAt = publishedAt,
                 imageUrl = imageUrl
             ),
-            score = score
+            score
         )
     }
 
-    private fun extractTitle(link: Element): String {
-        val candidates = listOf(
-            link.selectFirst("h1, h2, h3, h4, h5")?.text().orEmpty(),
-            link.text(),
-            link.attr("aria-label"),
-            link.attr("title"),
-            link.selectFirst("img")?.attr("alt").orEmpty()
-        )
-
-        // Prefer a real heading/label that already looks like a headline.
-        // This avoids rejecting cards whose <a> contains the headline plus
-        // metadata, author, timestamp and other text.
-        return candidates
-            .asSequence()
-            .map { it.replace(Regex("\\s+"), " ").trim() }
-            .firstOrNull { it.length in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH }
-            .orEmpty()
-    }
+    private fun extractTitle(link: Element): String = listOf(
+        link.selectFirst("h1, h2, h3, h4, h5")?.text().orEmpty(),
+        link.text(),
+        link.attr("aria-label"),
+        link.attr("title"),
+        link.selectFirst("img")?.attr("alt").orEmpty()
+    ).asSequence()
+        .map { it.replace(Regex("\\s+"), " ").trim() }
+        .firstOrNull { it.length in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH }
+        .orEmpty()
 
     private fun isValidUrl(url: String, baseHost: String): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
         val host = uri.host?.removePrefix("www.") ?: return false
         val samePortal = host == baseHost || host.endsWith(".$baseHost")
-        if (uri.scheme !in listOf("http", "https") || !samePortal) return false
-        if (uri.fragment != null || uri.path.isNullOrBlank() || uri.path == "/") return false
-        return true
+        return uri.scheme in listOf("http", "https") && samePortal && uri.fragment == null && !uri.path.isNullOrBlank() && uri.path != "/"
     }
 
     private fun isNavigationLike(link: Element, url: String): Boolean {
-        val structuralParents = link.parents().toList()
-        if (structuralParents.any { it.tagName() in setOf("nav", "header", "footer", "aside") }) return true
-
-        val structuralText = (
-            listOf(link.className(), link.id()) +
-                structuralParents.take(4).flatMap { listOf(it.className(), it.id()) }
-            )
-            .joinToString(" ")
-            .lowercase()
-
-        if (listOf("menu", "navigation", "breadcrumb", "social", "share", "login", "entrar", "newsletter").any {
-                structuralText.contains(it)
-            }) return true
-
-        return listOf(
-            "facebook", "instagram", "youtube", "twitter", "x.com", "whatsapp",
-            "login", "entrar", "assine", "assinatura"
-        ).any { url.contains(it) }
+        val parents = link.parents().toList()
+        if (parents.any { it.tagName() in setOf("nav", "header", "footer", "aside") }) return true
+        val structuralText = (listOf(link.className(), link.id()) + parents.take(5).flatMap { listOf(it.className(), it.id()) }).joinToString(" ").lowercase()
+        if (listOf("menu", "navigation", "breadcrumb", "social", "share", "login", "entrar", "newsletter").any { structuralText.contains(it) }) return true
+        return listOf("facebook", "instagram", "youtube", "twitter", "x.com", "whatsapp", "login", "entrar", "assine", "assinatura").any { url.contains(it) }
     }
 
     private fun imageSource(image: Element): String? {
-        val direct = listOf("src", "data-src", "data-lazy-src", "data-original")
-            .firstNotNullOfOrNull { attr -> image.attr(attr).takeIf { it.startsWith("http") } }
+        val direct = listOf("src", "data-src", "data-lazy-src", "data-original", "data-image").firstNotNullOfOrNull { attr -> image.attr(attr).takeIf { it.startsWith("http") } }
         if (direct != null) return direct
-
-        return image.attr("srcset")
-            .split(",")
-            .asSequence()
-            .map { it.trim().substringBefore(" ") }
-            .firstOrNull { it.startsWith("http") }
+        return image.attr("srcset").split(",").asSequence().map { it.trim().substringBefore(" ") }.firstOrNull { it.startsWith("http") }
     }
 
     private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf { it.isNotBlank() }?.let {
@@ -172,11 +128,12 @@ class HomepageNewsCrawler {
     private data class Candidate(val item: FeedItem, val score: Int)
 
     private companion object {
-        const val TIMEOUT = 15_000
+        const val TIMEOUT = 20_000
         const val MAX_ITEMS = 50
         const val MIN_SCORE = 5
         const val MIN_TITLE_LENGTH = 25
         const val MAX_TITLE_LENGTH = 180
-        const val USER_AGENT = "NewsRSS/0.1 (Android; open-source reader)"
+        const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.1"
+        const val REFERRER = "https://www.google.com/"
     }
 }
