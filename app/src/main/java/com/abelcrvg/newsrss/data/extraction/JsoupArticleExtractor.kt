@@ -11,7 +11,7 @@ import java.net.URI
 
 /** Generic reader-mode extractor for publicly available article HTML. */
 class JsoupArticleExtractor(
-    private val timeoutMillis: Int = 15_000
+    private val timeoutMillis: Int = 20_000
 ) : ArticleExtractor {
 
     override suspend fun extract(url: String): Result<Article> = withContext(Dispatchers.IO) {
@@ -22,19 +22,42 @@ class JsoupArticleExtractor(
                 .userAgent(USER_AGENT)
                 .timeout(timeoutMillis)
                 .followRedirects(true)
+                .referrer("https://www.google.com/")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                .header("Accept-Language", "pt-BR,pt;q=0.9,en;q=0.8")
                 .get()
 
             removeNoise(document)
 
             val title = firstNonBlank(
                 document.select("meta[property=og:title]").attr("content"),
+                document.select("meta[name=twitter:title]").attr("content"),
                 document.select("h1").first()?.text(),
                 document.title()
             ) ?: error("Article title not found")
 
             val root = findContentRoot(document) ?: error("Article content not found")
-            val blocks = extractBlocks(root)
-            val textLength = blocks.joinToString(" ") { textOf(it) }.length
+            var blocks = extractBlocks(root)
+            var textLength = blocks.joinToString(" ") { textOf(it) }.length
+
+            // Some publishers use a very generic container. If the first root was
+            // too sparse, try the strongest article-like containers before failing.
+            if (textLength < MIN_CONTENT_LENGTH) {
+                val alternatives = document.select(
+                    "article,main,[role=main],.article,.article-body,.article-content,.article__body," +
+                        ".story-body,.story-content,.post-content,.entry-content,.content-body,.materia-conteudo"
+                ).distinct()
+                for (candidate in alternatives.sortedByDescending(::score)) {
+                    val candidateBlocks = extractBlocks(candidate)
+                    val candidateLength = candidateBlocks.joinToString(" ") { textOf(it) }.length
+                    if (candidateLength > textLength) {
+                        blocks = candidateBlocks
+                        textLength = candidateLength
+                    }
+                    if (textLength >= MIN_CONTENT_LENGTH) break
+                }
+            }
+
             require(textLength >= MIN_CONTENT_LENGTH) { "Extracted content is too short" }
 
             Article(
@@ -44,11 +67,14 @@ class JsoupArticleExtractor(
                 title = title,
                 subtitle = firstNonBlank(
                     document.select("meta[name=description]").attr("content"),
-                    document.select("meta[property=og:description]").attr("content")
+                    document.select("meta[property=og:description]").attr("content"),
+                    document.select("meta[name=twitter:description]").attr("content")
                 ),
                 author = extractAuthor(document),
-                heroImageUrl = document.select("meta[property=og:image]").attr("content")
-                    .takeIf { it.isNotBlank() },
+                heroImageUrl = firstNonBlank(
+                    document.select("meta[property=og:image]").attr("content"),
+                    document.select("meta[name=twitter:image]").attr("content")
+                ),
                 blocks = blocks
             )
         }
@@ -60,7 +86,7 @@ class JsoupArticleExtractor(
                 "[role=navigation],[role=banner],[role=contentinfo]," +
                 ".ad,.ads,.advert,.advertisement,.social,.share,.comments,.comment," +
                 ".related,.recommendations,.recommended,.newsletter,.cookie,.cookies," +
-                ".popup,.modal"
+                ".popup,.modal,.paywall,.login,.subscription"
         ).remove()
         document.select("[hidden],[aria-hidden=true]").remove()
     }
@@ -69,7 +95,7 @@ class JsoupArticleExtractor(
         document.select("article").maxByOrNull(::score)?.let { return it }
         document.select(
             "main,[role=main],.article-body,.article-content,.article__body," +
-                ".story-body,.story-content,.post-content,.entry-content,.content-body"
+                ".story-body,.story-content,.post-content,.entry-content,.content-body,.materia-conteudo"
         ).maxByOrNull(::score)?.let { return it }
         return document.body().select("div,section").maxByOrNull(::score)
     }
@@ -77,9 +103,10 @@ class JsoupArticleExtractor(
     private fun score(element: Element): Int {
         val text = element.text().length
         val paragraphs = element.select("p").size
-        val headings = element.select("h2,h3").size
+        val headings = element.select("h2,h3,h4").size
+        val images = element.select("img").size
         val links = element.select("a").text().length
-        return text + paragraphs * 220 + headings * 80 - links / 3
+        return text + paragraphs * 260 + headings * 80 + images * 25 - links / 3
     }
 
     private fun extractBlocks(root: Element): List<ArticleBlock> {
@@ -107,12 +134,17 @@ class JsoupArticleExtractor(
                 "img" -> if (element.parent()?.tagName() != "figure") addImage(result, element, null)
             }
         }
-        return result
+        return result.distinct()
     }
 
     private fun addImage(result: MutableList<ArticleBlock>, image: Element, caption: String?) {
-        val src = firstNonBlank(image.absUrl("src"), image.absUrl("data-src"), image.absUrl("data-lazy-src"))
-            ?: return
+        val src = firstNonBlank(
+            image.absUrl("src"),
+            image.absUrl("data-src"),
+            image.absUrl("data-lazy-src"),
+            image.absUrl("data-original"),
+            image.absUrl("data-image")
+        ) ?: return
         if (!src.startsWith("http://") && !src.startsWith("https://")) return
         result += ArticleBlock.Image(
             url = src,
@@ -123,8 +155,9 @@ class JsoupArticleExtractor(
 
     private fun extractAuthor(document: org.jsoup.nodes.Document): String? = firstNonBlank(
         document.select("meta[name=author]").attr("content"),
+        document.select("meta[property=article:author]").attr("content"),
         document.select("[rel=author]").first()?.text(),
-        document.select(".author,.byline,.article-author,.article__author").first()?.text()
+        document.select(".author,.byline,.article-author,.article__author,.autor,.materia-cabecalho__autor").first()?.text()
     )
 
     private fun textOf(block: ArticleBlock): String = when (block) {
@@ -140,7 +173,7 @@ class JsoupArticleExtractor(
         .firstOrNull()
 
     private companion object {
-        const val MIN_CONTENT_LENGTH = 200
-        const val USER_AGENT = "NewsRSS/0.1 (Android; open-source reader)"
+        const val MIN_CONTENT_LENGTH = 120
+        const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36 NewsRSS/0.2"
     }
 }
