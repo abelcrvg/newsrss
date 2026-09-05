@@ -4,7 +4,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -16,7 +15,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -29,6 +27,7 @@ import com.abelcrvg.newsrss.core.model.NewsCategory
 import com.abelcrvg.newsrss.core.source.SourceRegistry
 import com.abelcrvg.newsrss.data.extraction.JsoupArticleExtractor
 import com.abelcrvg.newsrss.data.feed.SmartFeedReader
+import com.abelcrvg.newsrss.data.source.ReadArticleStore
 import com.abelcrvg.newsrss.data.source.SourceStore
 import com.abelcrvg.newsrss.ui.theme.NewsRSSTheme
 import kotlinx.coroutines.async
@@ -51,7 +50,9 @@ class MainActivity : ComponentActivity() {
 private fun NewsRSSApp() {
     val context = LocalContext.current
     val sourceStore = remember { SourceStore(context.applicationContext) }
+    val readArticleStore = remember { ReadArticleStore(context.applicationContext) }
     var sources by remember { mutableStateOf(sourceStore.load(SourceRegistry.defaultSources)) }
+    var readUrls by remember { mutableStateOf(readArticleStore.load()) }
     var items by remember { mutableStateOf<List<FeedItem>>(emptyList()) }
     var article by remember { mutableStateOf<Article?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -69,6 +70,11 @@ private fun NewsRSSApp() {
     fun persist(newSources: List<FeedSource>) {
         sources = newSources
         sourceStore.save(newSources)
+    }
+
+    fun markAsRead(item: FeedItem) {
+        readArticleStore.markRead(item.url)
+        readUrls = readUrls + item.url
     }
 
     fun refresh() {
@@ -116,11 +122,12 @@ private fun NewsRSSApp() {
         refresh()
     }
 
-    val visibleItems = remember(items, sources, selectedCategory) {
+    val visibleItems = remember(items, sources, selectedCategory, readUrls) {
         val category = selectedCategory
-        if (category == null) items else {
+        val unreadItems = items.filterNot { it.url in readUrls }
+        if (category == null) unreadItems else {
             val sourceIds = sources.filter { it.category == category && it.enabled }.map { it.id }.toSet()
-            items.filter { it.sourceId in sourceIds }
+            unreadItems.filter { it.sourceId in sourceIds }
         }
     }
 
@@ -189,6 +196,7 @@ private fun NewsRSSApp() {
                             NewsCard(item, sources) {
                                 returnIndex = listState.firstVisibleItemIndex
                                 returnOffset = listState.firstVisibleItemScrollOffset
+                                markAsRead(item)
                                 opening = true
                                 error = null
                                 scope.launch {
@@ -267,13 +275,13 @@ private fun NewsCard(item: FeedItem, sources: List<FeedSource>, onClick: () -> U
         Column {
             item.imageUrl?.let { image -> AsyncImage(model = image, contentDescription = item.title, modifier = Modifier.fillMaxWidth().height(190.dp), contentScale = ContentScale.Crop) }
             Column(modifier = Modifier.padding(14.dp)) {
-                Text(item.title, style = MaterialTheme.typography.titleLarge)
-                item.summary?.takeIf { it.isNotBlank() }?.let { Spacer(Modifier.height(6.dp)); Text(it, maxLines = 3, style = MaterialTheme.typography.bodyMedium) }
-                Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(source?.name ?: "Fonte", style = MaterialTheme.typography.labelMedium)
                     item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelMedium) }
                 }
+                Spacer(Modifier.height(8.dp))
+                Text(item.title, style = MaterialTheme.typography.titleLarge)
+                item.summary?.takeIf { it.isNotBlank() }?.let { Spacer(Modifier.height(6.dp)); Text(it, maxLines = 3, style = MaterialTheme.typography.bodyMedium) }
             }
         }
     }
