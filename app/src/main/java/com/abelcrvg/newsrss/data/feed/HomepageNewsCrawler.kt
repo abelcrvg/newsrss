@@ -15,27 +15,51 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** Finds news directly from a site's homepage when RSS/Atom is unavailable. */
+/** Finds news directly from a site's homepage/sections when RSS/Atom is unavailable or incomplete. */
 class HomepageNewsCrawler {
     suspend fun crawl(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
             val baseHost = URI(source.siteUrl).host?.removePrefix("www.") ?: error("URL inválida")
             val documents = mutableListOf<Document>()
-            if (isGloboPortal(source, baseHost)) {
+
+            if (source.id == "the-verge" || baseHost == "theverge.com") {
+                // The Verge's public RSS can be deliberately short. Scan the site itself,
+                // including its main editorial sections, so the feed is not limited to five items.
+                val base = source.siteUrl.trimEnd('/')
+                val sectionUrls = listOf(
+                    base,
+                    "$base/tech",
+                    "$base/ai",
+                    "$base/science",
+                    "$base/entertainment",
+                    "$base/reviews",
+                    "$base/policy",
+                    "$base/security",
+                    "$base/games"
+                ).distinct()
+                sectionUrls.forEach { url ->
+                    runCatching { fetch(url) }.onSuccess { documents += it }
+                }
+            } else if (isGloboPortal(source, baseHost)) {
                 val plantaoUrls = buildList {
                     add("${source.siteUrl.trimEnd('/')}/plantao/")
                     for (page in 2..GLOBO_MAX_PAGES) add("${source.siteUrl.trimEnd('/')}/plantao/index/feed/pagina-$page.ghtml")
                 }
                 plantaoUrls.forEach { url -> runCatching { fetch(url) }.onSuccess { documents += it } }
             }
+
             if (documents.isEmpty()) documents += fetch(source.siteUrl)
-            val candidates = documents.flatMap { document -> document.select("a[href]").mapNotNull { link -> candidate(source, baseHost, link, document) } }
+
+            val candidates = documents.flatMap { document ->
+                document.select("a[href]").mapNotNull { link -> candidate(source, baseHost, link, document) }
+            }
                 .groupBy { it.item.url }
                 .values
                 .map { it.maxBy { candidate -> candidate.score }.item }
                 .distinctBy { it.url }
                 .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title })
                 .take(MAX_ITEMS)
+
             if (candidates.isEmpty()) error("Nenhuma notícia foi identificada na página de ${source.name}")
             candidates
         }
@@ -58,6 +82,7 @@ class HomepageNewsCrawler {
         if (article != null) score += 12
         if (card != null) score += 8
         if (link.closest("[itemtype*=Article], [itemtype*=NewsArticle]") != null) score += 9
+        if (source.id == "the-verge" && isTheVergeArticleUrl(url)) score += 10
         if (isGloboPortal(source, baseHost) && url.contains("/noticia/", true)) score += 8
         if (url.contains("/materia/", true)) score += 5
         if (url.matches(Regex(".*20\\d{2}/\\d{2}/\\d{2}.*"))) score += 5
@@ -70,6 +95,12 @@ class HomepageNewsCrawler {
         val publishedAt = extractPublishedAt(link, context, document, url, contextText)
         val summary = context.select("p").map { it.text().replace(Regex("\\s+"), " ").trim() }.firstOrNull { it.length >= 30 && it != title }
         return Candidate(FeedItem((source.id + url).hashCode().toUInt().toString(16), source.id, title, url, summary, publishedAt, imageUrl), score)
+    }
+
+    private fun isTheVergeArticleUrl(url: String): Boolean {
+        val path = runCatching { URI(url).path.orEmpty() }.getOrDefault("").lowercase()
+        val section = listOf("/tech/", "/ai/", "/science/", "/entertainment/", "/reviews/", "/policy/", "/security/", "/games/")
+        return section.any(path::startsWith) && path.count { it == '/' } >= 2
     }
 
     private fun findImageInContext(link: Element, context: Element): String? {
