@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.Document
 import java.net.URI
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -14,22 +15,34 @@ import java.time.format.DateTimeFormatter
 import java.time.LocalDateTime
 import java.time.ZoneId
 
-/** Finds likely news links directly from a site's homepage when RSS/Atom is unavailable. */
+/** Finds news links directly from a site's homepage when RSS/Atom is unavailable. */
 class HomepageNewsCrawler {
     suspend fun crawl(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
-            val document = Jsoup.connect(source.siteUrl)
-                .userAgent(USER_AGENT)
-                .referrer(REFERRER)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-                .header("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.7,en;q=0.5")
-                .timeout(TIMEOUT)
-                .followRedirects(true)
-                .get()
-
+            val firstPage = fetch(source.siteUrl)
             val baseHost = URI(source.siteUrl).host?.removePrefix("www.") ?: error("URL inválida")
-            val candidates = document.select("a[href]")
-                .mapNotNull { link -> candidate(source, baseHost, link, document) }
+            val documents = mutableListOf(firstPage)
+
+            // ge exposes a much larger chronological feed through paginated pages.
+            if (isGe(source, baseHost)) {
+                for (page in 2..GE_MAX_PAGES) {
+                    runCatching { fetch("${source.siteUrl.trimEnd('/')}/index/feed/pagina-$page.ghtml") }
+                        .onSuccess { documents += it }
+                }
+            } else {
+                // For other portals, follow a few explicit pagination links when present.
+                firstPage.select("a[href]")
+                    .mapNotNull { it.absUrl("href").takeIf { url -> url.isNotBlank() } }
+                    .filter { it.contains("pagina-", ignoreCase = true) || it.contains("page=", ignoreCase = true) }
+                    .distinct()
+                    .take(MAX_EXTRA_PAGES)
+                    .forEach { url -> runCatching { fetch(url) }.onSuccess { documents += it } }
+            }
+
+            val candidates = documents
+                .flatMap { document ->
+                    document.select("a[href]").mapNotNull { link -> candidate(source, baseHost, link, document) }
+                }
                 .groupBy { it.item.url }
                 .values
                 .map { matches -> matches.maxBy { it.score }.item }
@@ -42,39 +55,54 @@ class HomepageNewsCrawler {
         }
     }
 
-    private fun candidate(source: FeedSource, baseHost: String, link: Element, document: org.jsoup.nodes.Document): Candidate? {
+    private fun fetch(url: String): Document = Jsoup.connect(url)
+        .userAgent(USER_AGENT)
+        .referrer(REFERRER)
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+        .header("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.7,en;q=0.5")
+        .timeout(TIMEOUT)
+        .followRedirects(true)
+        .get()
+
+    private fun candidate(source: FeedSource, baseHost: String, link: Element, document: Document): Candidate? {
         val url = link.absUrl("href").trim()
         if (!isValidUrl(url, baseHost)) return null
+        val urlLower = url.lowercase()
         val title = extractTitle(link)
         if (title.length !in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH) return null
 
         val article = link.closest("article")
+        val card = link.closest("[class*=card], [class*=story], [class*=headline], [class*=noticia], [class*=materia], [class*=post], [class*=feed]")
         val main = link.closest("main")
-        val context = article ?: main ?: link.parent() ?: return null
+        val context = article ?: card ?: main ?: link.parent() ?: return null
         val contextText = context.text().replace(Regex("\\s+"), " ").trim().lowercase()
-        val urlLower = url.lowercase()
         var score = 0
 
         if (article != null) score += 10
+        if (card != null) score += 5
         if (link.closest("[itemtype*=Article], [itemtype*=NewsArticle]") != null) score += 9
-        if (link.closest("[class*=card], [class*=story], [class*=headline], [class*=noticia], [class*=materia], [class*=post]") != null) score += 5
         if (main != null) score += 2
         if (urlLower.matches(Regex(".*(/noticia[s]?/|/news/|/story/|/materia[s]?/|/post/|/article/).*"))) score += 8
         if (urlLower.matches(Regex(".*20\\d{2}/\\d{2}/\\d{2}.*"))) score += 5
         if (title.length >= 45) score += 2
-        if (link.selectFirst("img") != null || article?.selectFirst("img") != null) score += 4
+        if (link.selectFirst("img, picture img, source[srcset]") != null || article?.selectFirst("img, picture img") != null || card?.selectFirst("img, picture img") != null) score += 4
         if (context.selectFirst("time[datetime]") != null) score += 5
         if (context.selectFirst("time") != null) score += 2
         if (contextText.contains("agora") || contextText.contains("min atrás") || contextText.contains("hora atrás")) score += 2
+
+        // ge article URLs are authoritative enough to accept even when their card markup is unusual.
+        if (isGe(source, baseHost) && urlLower.contains("/noticia/")) score += 6
 
         if (isNavigationLike(link, urlLower)) score -= 15
         if (urlLower.contains("/tag/") || urlLower.contains("/tags/") || urlLower.contains("/categoria/") || urlLower.contains("/category/")) score -= 10
         if (urlLower.contains("/busca") || urlLower.contains("/search") || urlLower.contains("/login") || urlLower.contains("/entrar") || urlLower.contains("/newsletter") || urlLower.contains("/assine")) score -= 20
         if (score < MIN_SCORE) return null
 
-        val imageUrl = link.selectFirst("img")?.let(::imageSource) ?: article?.selectFirst("img")?.let(::imageSource)
+        val imageUrl = extractImage(link, context, document)
         val publishedAt = extractPublishedAt(context, document, url)
-        val summary = article?.select("p")?.map { it.text().replace(Regex("\\s+"), " ").trim() }?.firstOrNull { it.length >= 30 && it != title }
+        val summary = context.select("p")
+            .map { it.text().replace(Regex("\\s+"), " ").trim() }
+            .firstOrNull { it.length >= 30 && it != title }
 
         return Candidate(
             FeedItem(
@@ -90,7 +118,23 @@ class HomepageNewsCrawler {
         )
     }
 
-    private fun extractPublishedAt(context: Element, document: org.jsoup.nodes.Document, url: String): Instant? {
+    private fun extractImage(link: Element, context: Element, document: Document): String? {
+        val image = link.selectFirst("img, picture img")
+            ?: context.selectFirst("img, picture img")
+        image?.let { imageSource(it)?.let { url -> return url } }
+
+        context.selectFirst("source[srcset], img[srcset]")?.let { imageSource(it)?.let { url -> return url } }
+
+        // Some portals expose the card image only through Open Graph metadata.
+        document.selectFirst("meta[property=og:image][content], meta[name=twitter:image][content]")
+            ?.attr("content")
+            ?.let { normalizeImageUrl(it, document.baseUri()).takeIf { url -> url.isNotBlank() } }
+            ?.let { return it }
+
+        return null
+    }
+
+    private fun extractPublishedAt(context: Element, document: Document, url: String): Instant? {
         val direct = sequenceOf(
             context.selectFirst("time[datetime]")?.attr("datetime"),
             context.selectFirst("time[content]")?.attr("content"),
@@ -172,10 +216,31 @@ class HomepageNewsCrawler {
     }
 
     private fun imageSource(image: Element): String? {
-        val direct = listOf("src", "data-src", "data-lazy-src", "data-original", "data-image").firstNotNullOfOrNull { attr -> image.attr(attr).takeIf { it.startsWith("http") } }
-        if (direct != null) return direct
-        return image.attr("srcset").split(",").asSequence().map { it.trim().substringBefore(" ") }.firstOrNull { it.startsWith("http") }
+        val attributes = listOf("src", "data-src", "data-lazy-src", "data-original", "data-image", "data-url", "data-thumb", "content")
+        attributes.firstNotNullOfOrNull { attr -> image.attr(attr).takeIf { it.isNotBlank() } }
+            ?.let { normalizeImageUrl(it, image.baseUri()).takeIf { url -> url.isNotBlank() } }
+            ?.let { return it }
+
+        val srcset = image.attr("srcset").ifBlank { image.attr("data-srcset") }
+        srcset.split(",").asSequence()
+            .map { it.trim().substringBefore(" ") }
+            .map { normalizeImageUrl(it, image.baseUri()) }
+            .firstOrNull { it.isNotBlank() }
+            ?.let { return it }
+        return null
     }
+
+    private fun normalizeImageUrl(value: String, baseUri: String): String {
+        val trimmed = value.trim()
+        if (trimmed.isBlank()) return ""
+        if (trimmed.startsWith("//")) return "https:$trimmed"
+        return runCatching { URI(baseUri).resolve(trimmed).toString() }.getOrElse { trimmed }
+            .takeIf { it.startsWith("http://") || it.startsWith("https://") }
+            ?: ""
+    }
+
+    private fun isGe(source: FeedSource, baseHost: String): Boolean =
+        baseHost == "ge.globo.com" || source.id == "ge" || source.name.equals("ge", ignoreCase = true)
 
     private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf { it.isNotBlank() }?.let {
         runCatching { Instant.parse(it) }.getOrNull()
@@ -192,8 +257,10 @@ class HomepageNewsCrawler {
 
     private companion object {
         const val TIMEOUT = 20_000
-        const val MAX_ITEMS = 50
-        const val MIN_SCORE = 5
+        const val MAX_ITEMS = 100
+        const val MAX_EXTRA_PAGES = 3
+        const val GE_MAX_PAGES = 5
+        const val MIN_SCORE = 3
         const val MIN_TITLE_LENGTH = 25
         const val MAX_TITLE_LENGTH = 180
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.1"
