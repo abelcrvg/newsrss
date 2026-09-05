@@ -62,8 +62,8 @@ private fun NewsRSSApp() {
     var selectedCategory by remember { mutableStateOf<NewsCategory?>(null) }
     var manageSources by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
-    var returnIndex by rememberSaveable { mutableIntStateOf(0) }
-    var returnOffset by rememberSaveable { mutableIntStateOf(0) }
+    var returnIndex by remember { mutableIntStateOf(0) }
+    var returnOffset by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
 
     fun persist(newSources: List<FeedSource>) {
