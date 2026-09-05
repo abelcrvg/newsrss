@@ -10,8 +10,7 @@ import java.net.URI
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZonedDateTime
-import java.time.DateTimeException
-import java.time.DateTimeFormatter
+import java.time.format.DateTimeFormatter
 import java.time.LocalDateTime
 import java.time.ZoneId
 
@@ -106,11 +105,8 @@ class HomepageNewsCrawler {
             context.selectFirst("meta[itemprop=datePublished]")?.attr("content")
         ).firstOrNull { !it.isNullOrBlank() }
         parseDate(direct)?.let { return it }
-
-        // Many homepages expose relative timestamps such as "há 15 min" or "há 2 horas".
         parseRelativeDate(direct ?: context.text())?.let { return it }
 
-        // Some portals expose the timestamp in a date-related attribute/class nearby.
         val dateLike = context.select("[class*=date], [class*=time], [class*=data], [class*=published], [class*=publish]")
             .asSequence()
             .flatMap { element ->
@@ -123,18 +119,14 @@ class HomepageNewsCrawler {
         parseDate(dateLike)?.let { return it }
         parseRelativeDate(dateLike)?.let { return it }
 
-        // A URL containing an ISO-like publication date is a useful fallback.
         DATE_IN_URL_REGEX.find(url)?.let { match ->
             val date = match.groupValues[1].replace('/', '-')
             val time = match.groupValues.getOrNull(2)?.replace('-', ':') ?: "00:00"
             parseDate("${date}T$time:00")?.let { return it }
         }
 
-        // JSON-LD is a final fallback. It is better than leaving the timestamp empty,
-        // but it is intentionally checked only after article-local metadata.
         document.select("script[type=application/ld+json]").forEach { script ->
-            val json = script.data()
-            DATE_PUBLISHED_REGEX.findAll(json).forEach { match ->
+            DATE_PUBLISHED_REGEX.findAll(script.data()).forEach { match ->
                 parseDate(match.groupValues.getOrNull(1))?.let { return it }
             }
         }
@@ -145,14 +137,11 @@ class HomepageNewsCrawler {
         if (value.isNullOrBlank()) return null
         val text = value.lowercase().replace(Regex("\\s+"), " ").trim()
         val now = Instant.now()
-        val minutes = Regex("(?:há|ha)\\s+(\\d+)\\s*(?:min|minuto|minutos)").find(text)?.groupValues?.get(1)?.toLongOrNull()
-        if (minutes != null) return now.minusSeconds(minutes * 60)
-        val hours = Regex("(?:há|ha)\\s+(\\d+)\\s*(?:h|hora|horas)").find(text)?.groupValues?.get(1)?.toLongOrNull()
-        if (hours != null) return now.minusSeconds(hours * 3600)
-        val days = Regex("(?:há|ha)\\s+(\\d+)\\s*(?:d|dia|dias)").find(text)?.groupValues?.get(1)?.toLongOrNull()
-        if (days != null) return now.minusSeconds(days * 86_400)
+        Regex("(?:há|ha)\\s+(\\d+)\\s*(?:min|minuto|minutos)").find(text)?.groupValues?.get(1)?.toLongOrNull()?.let { return now.minusSeconds(it * 60) }
+        Regex("(?:há|ha)\\s+(\\d+)\\s*(?:h|hora|horas)").find(text)?.groupValues?.get(1)?.toLongOrNull()?.let { return now.minusSeconds(it * 3600) }
+        Regex("(?:há|ha)\\s+(\\d+)\\s*(?:d|dia|dias)").find(text)?.groupValues?.get(1)?.toLongOrNull()?.let { return now.minusSeconds(it * 86_400) }
         if (text.contains("ontem")) return now.minusSeconds(86_400)
-        if (text.matches(Regex(".*\\bagora\\b.*"))) return now
+        if (Regex(".*\\bagora\\b.*").matches(text)) return now
         return null
     }
 
