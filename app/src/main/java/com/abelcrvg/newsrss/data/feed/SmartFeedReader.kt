@@ -5,70 +5,26 @@ import com.abelcrvg.newsrss.core.feed.FeedReader
 import com.abelcrvg.newsrss.core.model.FeedSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.time.Instant
+import java.net.URI
 
-/** Uses RSS/Atom first and supplements it with direct site crawling when useful. */
+/** Reads news directly from each source website instead of relying on RSS/Atom. */
 class SmartFeedReader(
-    private val rssReader: FeedReader = JsoupFeedReader(),
     private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler()
 ) : FeedReader {
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
-        // Voxel is an editorial section hosted inside tecmundo.com.br. Its section
-        // must not consume TecMundo's general RSS feed, otherwise both sources would
-        // end up showing the same technology articles.
+        val crawlResult = homepageCrawler.crawl(source)
+
         if (source.id == "voxel") {
-            return@withContext homepageCrawler.crawl(source).map { items ->
+            return@withContext crawlResult.map { items ->
                 items.filter { isVoxelArticle(it.url) }
             }
         }
 
-        // G1 is more reliable when read directly from its main site. Do not use
-        // G1's RSS here, so the app reflects the current homepage instead of an
-        // incomplete/stale RSS catalog.
-        if (source.id == "g1") {
-            return@withContext homepageCrawler.crawl(source)
-        }
-
-        val rssResult = rssReader.read(source)
-        val rssItems = rssResult.getOrNull().orEmpty()
-
-        // The Verge's RSS is intentionally not treated as the complete catalog.
-        // Always scan the public site sections too, then merge and deduplicate.
-        val shouldCrawlDirectly = source.id == "the-verge"
-        if (shouldCrawlDirectly || rssItems.size < MIN_RSS_ITEMS) {
-            val crawlResult = homepageCrawler.crawl(source)
-            val crawlItems = crawlResult.getOrNull().orEmpty()
-            val merged = (rssItems + crawlItems)
-                .distinctBy { it.url }
-                .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title })
-                .take(MAX_ITEMS)
-
-            if (merged.isNotEmpty()) return@withContext Result.success(merged)
-            if (rssResult.isSuccess) return@withContext rssResult
-
-            val rssError = rssResult.exceptionOrNull()?.message
-            val crawlError = crawlResult.exceptionOrNull()?.message
-            return@withContext Result.failure(
-                IllegalStateException(
-                    listOfNotNull(
-                        "Não foi possível obter notícias de ${source.name}.",
-                        rssError?.takeIf { it.isNotBlank() },
-                        crawlError?.takeIf { it.isNotBlank() }
-                    ).joinToString(" ")
-                )
-            )
-        }
-
-        rssResult
+        crawlResult
     }
 
     private fun isVoxelArticle(url: String): Boolean {
-        val path = runCatching { java.net.URI(url).path.orEmpty().lowercase() }.getOrDefault("")
+        val path = runCatching { URI(url).path.orEmpty().lowercase() }.getOrDefault("")
         return path.startsWith("/voxel/") && path.length > "/voxel/".length
-    }
-
-    private companion object {
-        const val MIN_RSS_ITEMS = 10
-        const val MAX_ITEMS = 150
     }
 }
