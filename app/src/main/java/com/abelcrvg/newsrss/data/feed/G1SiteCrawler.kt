@@ -20,8 +20,9 @@ class G1SiteCrawler {
             val baseHost = URI(base).host?.removePrefix("www.") ?: error("URL inválida")
             val homepage = fetch(base)
 
-            // The homepage is authoritative: collect every plausible G1 content link
-            // found there, without an artificial item limit. Plantao is only a supplement.
+            // The homepage is authoritative, but only real G1 article URLs are accepted.
+            // Section/navigation pages (e.g. "Primeira Página", "Minas Gerais", "Moda e beleza")
+            // are not news items and must never become cards in NewsRSS.
             val homepageItems = extractHomepage(homepage, source, baseHost)
 
             val plantaoUrls = buildList {
@@ -36,7 +37,7 @@ class G1SiteCrawler {
                 .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title })
 
             val combined = (homepageItems + latestItems).distinctBy { it.url }
-            if (combined.isEmpty()) error("Nenhum conteúdo foi identificado na página do G1")
+            if (combined.isEmpty()) error("Nenhuma notícia foi identificada na página do G1")
             combined
         }
     }
@@ -57,11 +58,9 @@ class G1SiteCrawler {
             val host = uri.host?.removePrefix("www.") ?: return@mapNotNull null
             if (host != baseHost) return@mapNotNull null
 
-            // On the G1 homepage, don't require a specific article URL prefix.
-            // If a link belongs to the content area and has a meaningful title, it is
-            // treated as a G1 story. This deliberately favors completeness over guessing
-            // which editorial section the story belongs to.
-            if (!isContentLink(uri.path.orEmpty())) return@mapNotNull null
+            // This is the key distinction: a G1 section/page link is navigation,
+            // while a published article has /noticia/ in its canonical path.
+            if (!isNewsArticle(uri.path.orEmpty())) return@mapNotNull null
 
             val context = findContentContext(link)
             if (context == null || context.parents().any { it.tagName() in setOf("nav", "header", "footer") }) {
@@ -92,7 +91,7 @@ class G1SiteCrawler {
             val url = link.absUrl("href").trim()
             val uri = runCatching { URI(url) }.getOrNull() ?: return@mapNotNull null
             if (uri.host?.removePrefix("www.") != baseHost) return@mapNotNull null
-            if (!isContentLink(uri.path.orEmpty())) return@mapNotNull null
+            if (!isNewsArticle(uri.path.orEmpty())) return@mapNotNull null
             val context = findContentContext(link) ?: link.parent() ?: return@mapNotNull null
             val title = extractTitle(link, context) ?: return@mapNotNull null
             FeedItem(
@@ -123,15 +122,12 @@ class G1SiteCrawler {
         .map { it.replace(Regex("\\s+"), " ").trim() }
         .firstOrNull { it.length in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH }
 
-    private fun isContentLink(path: String): Boolean {
-        val normalized = path.lowercase().substringBefore('?')
-        if (normalized.isBlank() || normalized == "/" || normalized.startsWith("/plantao")) return false
-        val blocked = listOf(
-            "/login", "/busca", "/newsletter", "/videos", "/podcasts", "/radio", "/ao-vivo",
-            "/fale-conosco", "/sobre", "/termos", "/privacidade", "/globoplay", "/gshow"
-        )
-        if (blocked.any { normalized.startsWith(it) }) return false
-        return normalized.count { it == '/' } >= 2 || normalized.contains("-")
+    /** True only for G1 published article URLs, not section/navigation landing pages. */
+    private fun isNewsArticle(path: String): Boolean {
+        val normalized = path.lowercase().substringBefore('?').trimEnd('/')
+        if (normalized.isBlank()) return false
+        if (normalized.startsWith("/plantao")) return false
+        return normalized.contains("/noticia/")
     }
 
     private fun extractImage(context: Element, document: Document): String? = context.select("img").asSequence()
