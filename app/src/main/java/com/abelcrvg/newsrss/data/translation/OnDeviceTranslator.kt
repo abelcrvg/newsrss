@@ -1,88 +1,88 @@
 package com.abelcrvg.newsrss.data.translation
 
 import android.content.Context
-import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.nl.languageid.LanguageIdentification
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.TranslatorOptions
-import com.google.mlkit.nl.translate.Translator
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
+import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.Translator
+import com.google.mlkit.nl.translate.TranslatorOptions
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/** Translates article text locally on the device, with Portuguese as the UI language. */
+/** Fast on-device English -> Portuguese translation. The caller only uses this for English sources. */
 class OnDeviceTranslator(context: Context) {
     private val appContext = context.applicationContext
 
     suspend fun translateArticle(article: Article): Article {
-        val translatedTitle = translateText(article.title)
-        val translatedSubtitle = article.subtitle?.let { translateText(it) }
-        val translatedAuthor = article.author?.let { translateText(it) }
-        val translatedBlocks = article.blocks.map { block ->
-            when (block) {
-                is ArticleBlock.Paragraph -> block.copy(text = translateText(block.text))
-                is ArticleBlock.Heading -> block.copy(text = translateText(block.text))
-                is ArticleBlock.Quote -> block.copy(
-                    text = translateText(block.text),
-                    author = block.author?.let { translateText(it) }
-                )
-                is ArticleBlock.ListBlock -> block.copy(items = block.items.map { translateText(it) })
-                is ArticleBlock.Image -> block.copy(
-                    caption = block.caption?.let { translateText(it) },
-                    altText = block.altText?.let { translateText(it) }
-                )
-            }
-        }
-        return article.copy(
-            title = translatedTitle,
-            subtitle = translatedSubtitle,
-            author = translatedAuthor,
-            blocks = translatedBlocks
-        )
-    }
-
-    private suspend fun translateText(text: String): String {
-        val clean = text.trim()
-        if (clean.isBlank() || clean.length < 3) return text
-
-        val languageId = LanguageIdentification.getClient()
+        val options = TranslatorOptions.Builder()
+            .setSourceLanguage(TranslateLanguage.ENGLISH)
+            .setTargetLanguage(TranslateLanguage.PORTUGUESE)
+            .build()
+        val translator = Translation.getClient(options)
         return try {
-            val languageTag = await<String> { continuation ->
-                languageId.identifyLanguage(clean)
-                    .addOnSuccessListener { continuation.resume(it) }
+            // Download/check the model exactly once per article instead of once per text block.
+            await<Unit> { continuation ->
+                translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
+                    .addOnSuccessListener { continuation.resume(Unit) }
                     .addOnFailureListener { continuation.resumeWithException(it) }
             }
 
-            if (languageTag == "und" || languageTag == "pt" || languageTag == "pt-BR") return text
-            val source = TranslateLanguage.fromLanguageTag(languageTag) ?: return text
-            if (source == TranslateLanguage.PORTUGUESE) return text
+            coroutineScope {
+                val title = async { translateText(translator, article.title) }
+                val subtitle = article.subtitle?.let { async { translateText(translator, it) } }
+                val author = article.author?.let { async { translateText(translator, it) } }
+                val translatedBlocks = article.blocks.map { block ->
+                    async {
+                        when (block) {
+                            is ArticleBlock.Paragraph -> block.copy(text = translateText(translator, block.text))
+                            is ArticleBlock.Heading -> block.copy(text = translateText(translator, block.text))
+                            is ArticleBlock.Quote -> block.copy(
+                                text = translateText(translator, block.text),
+                                author = block.author?.let { translateText(translator, it) }
+                            )
+                            is ArticleBlock.ListBlock -> block.copy(
+                                items = block.items.map { translateText(translator, it) }
+                            )
+                            is ArticleBlock.Image -> block.copy(
+                                caption = block.caption?.let { translateText(translator, it) },
+                                altText = block.altText?.let { translateText(translator, it) }
+                            )
+                        }
+                    }
+                }.awaitAll()
 
-            val options = TranslatorOptions.Builder()
-                .setSourceLanguage(source)
-                .setTargetLanguage(TranslateLanguage.PORTUGUESE)
-                .build()
-            val translator = Translation.getClient(options)
-            try {
-                await<Unit> { continuation ->
-                    translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
-                        .addOnSuccessListener { continuation.resume(Unit) }
-                        .addOnFailureListener { continuation.resumeWithException(it) }
-                }
-                await<String> { continuation ->
-                    translator.translate(clean)
-                        .addOnSuccessListener { continuation.resume(it) }
-                        .addOnFailureListener { continuation.resumeWithException(it) }
-                }
-            } finally {
-                translator.close()
+                article.copy(
+                    title = title.await(),
+                    subtitle = subtitle?.await(),
+                    author = author?.await(),
+                    blocks = translatedBlocks
+                )
+            }
+        } catch (_: Exception) {
+            // If the model cannot be downloaded/used, keep the original article readable.
+            article
+        } finally {
+            translator.close()
+        }
+    }
+
+    private suspend fun translateText(translator: Translator, text: String): String {
+        val clean = text.trim()
+        if (clean.isBlank() || clean.length < 3) return text
+        return try {
+            await<String> { continuation ->
+                translator.translate(clean)
+                    .addOnSuccessListener { continuation.resume(it) }
+                    .addOnFailureListener { continuation.resumeWithException(it) }
             }
         } catch (_: Exception) {
             text
-        } finally {
-            languageId.close()
         }
     }
 
