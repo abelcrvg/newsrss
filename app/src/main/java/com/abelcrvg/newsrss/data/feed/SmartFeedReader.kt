@@ -11,19 +11,21 @@ class SmartFeedReader(
 ) : FeedReader {
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> {
         val rssResult = rssReader.read(source)
-        if (rssResult.isSuccess && !rssResult.getOrNull().isNullOrEmpty()) {
-            return rssResult
-        }
+        if (rssResult.isSuccess && !rssResult.getOrNull().isNullOrEmpty()) return rssResult
 
         val crawlResult = homepageCrawler.crawl(source)
-        if (crawlResult.isSuccess && !crawlResult.getOrNull().isNullOrEmpty()) {
-            return crawlResult
-        }
+        if (crawlResult.isSuccess && !crawlResult.getOrNull().isNullOrEmpty()) return crawlResult
 
+        val rssError = rssResult.exceptionOrNull()?.message
+        val crawlError = crawlResult.exceptionOrNull()?.message
         return Result.failure(
-            rssResult.exceptionOrNull()
-                ?: crawlResult.exceptionOrNull()
-                ?: IllegalStateException("Não foi possível encontrar notícias em ${source.name}")
+            IllegalStateException(
+                listOfNotNull(
+                    "Não foi possível obter notícias de ${source.name}.",
+                    rssError?.takeIf { it.isNotBlank() },
+                    crawlError?.takeIf { it.isNotBlank() }
+                ).joinToString(" ")
+            )
         )
     }
 }
