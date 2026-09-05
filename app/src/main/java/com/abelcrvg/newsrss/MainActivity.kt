@@ -30,6 +30,7 @@ import com.abelcrvg.newsrss.data.feed.SmartFeedReader
 import com.abelcrvg.newsrss.data.source.ReadArticleStore
 import com.abelcrvg.newsrss.data.source.SavedArticleStore
 import com.abelcrvg.newsrss.data.source.SourceStore
+import com.abelcrvg.newsrss.data.translation.OnDeviceTranslator
 import com.abelcrvg.newsrss.ui.theme.NewsRSSTheme
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -133,12 +134,21 @@ private fun NewsRSSApp() {
         scope.launch {
             JsoupArticleExtractor().extract(item.url)
                 .onSuccess { extracted ->
-                    article = extracted.copy(publishedAt = extracted.publishedAt ?: item.publishedAt)
+                    scope.launch {
+                        // Only sources explicitly placed in the English category are translated.
+                        article = if (sources.firstOrNull { it.id == item.sourceId }?.category == NewsCategory.ENGLISH) {
+                            OnDeviceTranslator(context.applicationContext).translateArticle(extracted)
+                        } else {
+                            extracted
+                        }
+                        article = article?.copy(publishedAt = article?.publishedAt ?: item.publishedAt)
+                        opening = false
+                    }
                 }
                 .onFailure { failure ->
                     error = failure.message ?: "Não foi possível abrir a notícia."
+                    opening = false
                 }
-            opening = false
         }
     }
 
