@@ -86,7 +86,9 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun extractTheVergeBlocks(document: org.jsoup.nodes.Document): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
         document.select(".duet--article--article-body-component").forEach { component ->
-            extractBlocks(component, 1).forEach { if (it !in result) result += it }
+            extractBlocks(component, 1).forEach { block ->
+                if (block !in result) result.add(block)
+            }
         }
         return result
     }
@@ -107,15 +109,23 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             ".content", ".main-content", ".single-content", ".post-body", ".story-body-content"
         )
         val result = mutableListOf<Element>()
-        selectors.forEach { selector -> document.select(selector).forEach { if (it !in result) result += it } }
-        if (theVerge) document.select(".duet--article--article-body-component").forEach { if (it !in result) result += it }
-
-        // Handle publishers with generated CSS classes by selecting text-dense containers.
+        selectors.forEach { selector ->
+            document.select(selector).forEach { element ->
+                if (element !in result) result.add(element)
+            }
+        }
+        if (theVerge) {
+            document.select(".duet--article--article-body-component").forEach { element ->
+                if (element !in result) result.add(element)
+            }
+        }
         document.select("div,section").asSequence()
             .filter { it.select("p").size >= 2 && it.text().length >= 80 }
             .sortedByDescending(::score)
             .take(12)
-            .forEach { if (it !in result) result += it }
+            .forEach { element ->
+                if (element !in result) result.add(element)
+            }
         return result
     }
 
@@ -126,12 +136,12 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         val result = mutableListOf<ArticleBlock>()
         root.select("p,h2,h3,h4,blockquote,ul,ol,figure,img").forEach { element ->
             when (element.tagName()) {
-                "p" -> element.text().trim().takeIf { it.length >= minParagraphLength }?.let { result += ArticleBlock.Paragraph(it) }
-                "h2", "h3", "h4" -> element.text().trim().takeIf { it.isNotBlank() }?.let { result += ArticleBlock.Heading(it, element.tagName().drop(1).toInt()) }
-                "blockquote" -> element.text().trim().takeIf { it.isNotBlank() }?.let { result += ArticleBlock.Quote(it) }
+                "p" -> element.text().trim().takeIf { it.length >= minParagraphLength }?.let { result.add(ArticleBlock.Paragraph(it)) }
+                "h2", "h3", "h4" -> element.text().trim().takeIf { it.isNotBlank() }?.let { result.add(ArticleBlock.Heading(it, element.tagName().drop(1).toInt())) }
+                "blockquote" -> element.text().trim().takeIf { it.isNotBlank() }?.let { result.add(ArticleBlock.Quote(it)) }
                 "ul", "ol" -> {
                     val items = element.children().filter { it.tagName() == "li" }.map { it.text().trim() }.filter { it.isNotBlank() }
-                    if (items.isNotEmpty()) result += ArticleBlock.ListBlock(items, element.tagName() == "ol")
+                    if (items.isNotEmpty()) result.add(ArticleBlock.ListBlock(items, element.tagName() == "ol"))
                 }
                 "figure" -> element.selectFirst("img")?.let { addImage(result, it, element.selectFirst("figcaption")?.text()) }
                 "img" -> if (element.parent()?.tagName() != "figure") addImage(result, element, null)
@@ -146,7 +156,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             image.absUrl("data-original"), image.absUrl("data-image"), image.absUrl("data-lazy"), image.absUrl("data-flickity-lazyload")
         ) ?: return
         if (!src.startsWith("http://") && !src.startsWith("https://")) return
-        result += ArticleBlock.Image(src, caption?.trim()?.takeIf { it.isNotBlank() }, image.attr("alt").trim().takeIf { it.isNotBlank() })
+        result.add(ArticleBlock.Image(src, caption?.trim()?.takeIf { it.isNotBlank() }, image.attr("alt").trim().takeIf { it.isNotBlank() }))
     }
 
     private fun extractAuthor(document: org.jsoup.nodes.Document): String? = firstNonBlank(
