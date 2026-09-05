@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
+        android:name=".NewsRssApplication"
         android:allowBackup="true"
         android:label="NewsRSS"
         android:supportsRtl="true"
