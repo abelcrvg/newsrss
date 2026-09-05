@@ -13,6 +13,15 @@ class SmartFeedReader(
     private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler()
 ) : FeedReader {
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
+        // Voxel is an editorial section hosted inside tecmundo.com.br. Its section
+        // must not consume TecMundo's general RSS feed, otherwise both sources would
+        // end up showing the same technology articles.
+        if (source.id == "voxel") {
+            return@withContext homepageCrawler.crawl(source).map { items ->
+                items.filter { isVoxelArticle(it.url) }
+            }
+        }
+
         val rssResult = rssReader.read(source)
         val rssItems = rssResult.getOrNull().orEmpty()
 
@@ -44,6 +53,11 @@ class SmartFeedReader(
         }
 
         rssResult
+    }
+
+    private fun isVoxelArticle(url: String): Boolean {
+        val path = runCatching { java.net.URI(url).path.orEmpty().lowercase() }.getOrDefault("")
+        return path.startsWith("/voxel/") && path.length > "/voxel/".length
     }
 
     private companion object {
