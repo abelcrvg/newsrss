@@ -1,10 +1,8 @@
 package com.abelcrvg.newsrss.data.extraction
 
-import com.abelcrvg.newsrss.NewsRssApplication
 import com.abelcrvg.newsrss.core.extraction.ArticleExtractor
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
-import com.abelcrvg.newsrss.data.translation.OnDeviceTranslator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
@@ -15,7 +13,7 @@ import java.time.OffsetDateTime
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** Generic reader-mode extractor. Public article text is translated to Portuguese on-device. */
+/** Generic reader-mode extractor for publicly available article HTML. */
 class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleExtractor {
     override suspend fun extract(url: String): Result<Article> = withContext(Dispatchers.IO) {
         runCatching {
@@ -48,7 +46,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             }
             require(textLength >= MIN_CONTENT_LENGTH) { "Extracted content is too short" }
 
-            val article = Article(
+            Article(
                 id = url.hashCode().toUInt().toString(16),
                 sourceId = URI(url).host.orEmpty(),
                 url = url,
@@ -66,10 +64,6 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                 ),
                 blocks = blocks
             )
-
-            // Translation is intentionally performed only when an article is opened.
-            // This keeps feed refreshes fast and avoids unnecessary model downloads.
-            OnDeviceTranslator(NewsRssApplication.appContext).translateArticle(article)
         }
     }
 
