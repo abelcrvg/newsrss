@@ -51,8 +51,8 @@ dependencies {
 
     implementation("org.jsoup:jsoup:1.23.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-    implementation("io.coil-kt.coil3:coil-compose:3.6.1")
-    implementation("io.coil-kt.coil3:coil-network-okhttp:3.6.1")
+    implementation("io.coil-kt.coil3:coil-compose:3.4.0")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.4.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
     testImplementation("junit:junit:4.13.2")
