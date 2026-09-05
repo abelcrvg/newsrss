@@ -13,6 +13,7 @@ object SourceRegistry {
         FeedSource("uol", "UOL", "https://www.uol.com.br", category = NewsCategory.NEWS),
         FeedSource("ge", "ge", "https://ge.globo.com", category = NewsCategory.FOOTBALL),
         FeedSource("tecmundo", "TecMundo", "https://www.tecmundo.com.br", category = NewsCategory.TECHNOLOGY),
-        FeedSource("ign-brasil", "IGN Brasil", "https://br.ign.com", category = NewsCategory.GAMES)
+        FeedSource("ign-brasil", "IGN Brasil", "https://br.ign.com", category = NewsCategory.GAMES),
+        FeedSource("the-verge", "The Verge", "https://www.theverge.com", category = NewsCategory.ENGLISH)
     )
 }
