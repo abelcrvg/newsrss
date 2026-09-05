@@ -22,6 +22,8 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                 .referrer("https://www.google.com/")
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
                 .header("Accept-Language", "pt-BR,pt;q=0.9,en;q=0.8").get()
+
+            val theVerge = isTheVerge(url)
             removeNoise(document)
             val title = firstNonBlank(
                 document.select("meta[property=og:title]").attr("content"),
@@ -29,13 +31,24 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                 document.select("h1").first()?.text(),
                 document.title()
             ) ?: error("Article title not found")
-            val root = findContentRoot(document) ?: error("Article content not found")
-            var blocks = extractBlocks(root)
+
+            var blocks = if (theVerge) extractTheVergeBlocks(document) else emptyList()
             var textLength = blocks.joinToString(" ") { textOf(it) }.length
+
+            val root = findContentRoot(document, theVerge) ?: error("Article content not found")
+            val genericBlocks = extractBlocks(root, if (theVerge) 1 else 20)
+            val genericLength = genericBlocks.joinToString(" ") { textOf(it) }.length
+            if (genericLength > textLength) {
+                blocks = genericBlocks
+                textLength = genericLength
+            }
+
             if (textLength < MIN_CONTENT_LENGTH) {
-                val alternatives = document.select("article,main,[role=main],.article,.article-body,.article-content,.article__body,.story-body,.story-content,.post-content,.entry-content,.content-body,.materia-conteudo").distinct()
+                val alternatives = document.select(
+                    "article,main,[role=main],.article,.article-body,.article-content,.article__body,.story-body,.story-content,.post-content,.entry-content,.content-body,.materia-conteudo"
+                ).distinct()
                 for (candidate in alternatives.sortedByDescending(::score)) {
-                    val candidateBlocks = extractBlocks(candidate)
+                    val candidateBlocks = extractBlocks(candidate, if (theVerge) 1 else 20)
                     val candidateLength = candidateBlocks.joinToString(" ") { textOf(it) }.length
                     if (candidateLength > textLength) {
                         blocks = candidateBlocks
@@ -62,17 +75,46 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                     document.select("meta[property=og:image]").attr("content"),
                     document.select("meta[name=twitter:image]").attr("content")
                 ),
-                blocks = blocks
+                blocks = blocks.distinct()
             )
         }
     }
 
+    private fun isTheVerge(url: String): Boolean =
+        URI(url).host.orEmpty().lowercase().removePrefix("www.") == "theverge.com"
+
+    private fun extractTheVergeBlocks(document: org.jsoup.nodes.Document): List<ArticleBlock> {
+        val components = document.select(".duet--article--article-body-component")
+        if (components.isEmpty()) return emptyList()
+
+        val result = mutableListOf<ArticleBlock>()
+        components.forEach { component ->
+            extractBlocks(component, minParagraphLength = 1).forEach { block ->
+                if (block !in result) result += block
+            }
+        }
+        return result
+    }
+
     private fun removeNoise(document: org.jsoup.nodes.Document) {
-        document.select("script:not([type=application/ld+json]),style,noscript,iframe,canvas,svg,form,nav,footer,header,aside,[role=navigation],[role=banner],[role=contentinfo],.ad,.ads,.advert,.advertisement,.social,.share,.comments,.comment,.related,.recommendations,.recommended,.newsletter,.cookie,.cookies,.popup,.modal,.paywall,.login,.subscription").remove()
+        document.select(
+            "script:not([type=application/ld+json]),style,noscript,iframe,canvas,svg,form,nav,footer,header,aside,[role=navigation],[role=banner],[role=contentinfo],.ad,.ads,.advert,.advertisement,.social,.share,.comments,.comment,.related,.recommendations,.recommended,.newsletter,.cookie,.cookies,.popup,.modal,.paywall,.login,.subscription"
+        ).remove()
         document.select("[hidden],[aria-hidden=true]").remove()
     }
 
-    private fun findContentRoot(document: org.jsoup.nodes.Document): Element? {
+    private fun findContentRoot(document: org.jsoup.nodes.Document, theVerge: Boolean): Element? {
+        if (theVerge) {
+            document.select(".duet--article--article-body-component").firstOrNull()?.let { first ->
+                var parent = first.parent()
+                repeat(4) {
+                    if (parent != null && parent!!.select(".duet--article--article-body-component").size > 1) {
+                        return parent
+                    }
+                    parent = parent?.parent()
+                }
+            }
+        }
         document.select("article").maxByOrNull(::score)?.let { return it }
         document.select("main,[role=main],.article-body,.article-content,.article__body,.story-body,.story-content,.post-content,.entry-content,.content-body,.materia-conteudo").maxByOrNull(::score)?.let { return it }
         return document.body().select("div,section").maxByOrNull(::score)
@@ -81,11 +123,11 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun score(element: Element): Int =
         element.text().length + element.select("p").size * 260 + element.select("h2,h3,h4").size * 80 + element.select("img").size * 25 - element.select("a").text().length / 3
 
-    private fun extractBlocks(root: Element): List<ArticleBlock> {
+    private fun extractBlocks(root: Element, minParagraphLength: Int): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
         root.select("p,h2,h3,h4,blockquote,ul,ol,figure,img").forEach { element ->
             when (element.tagName()) {
-                "p" -> element.text().trim().takeIf { it.length >= 20 }?.let { result += ArticleBlock.Paragraph(it) }
+                "p" -> element.text().trim().takeIf { it.length >= minParagraphLength }?.let { result += ArticleBlock.Paragraph(it) }
                 "h2", "h3", "h4" -> element.text().trim().takeIf { it.isNotBlank() }?.let { result += ArticleBlock.Heading(it, element.tagName().drop(1).toInt()) }
                 "blockquote" -> element.text().trim().takeIf { it.isNotBlank() }?.let { result += ArticleBlock.Quote(it) }
                 "ul", "ol" -> {
