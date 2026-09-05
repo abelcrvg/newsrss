@@ -9,9 +9,14 @@ import java.net.URI
 
 /** Reads news directly from each source website instead of relying on RSS/Atom. */
 class SmartFeedReader(
-    private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler()
+    private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler(),
+    private val g1Crawler: G1SiteCrawler = G1SiteCrawler()
 ) : FeedReader {
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
+        if (source.id == "g1") {
+            return@withContext g1Crawler.crawl(source)
+        }
+
         val crawlResult = homepageCrawler.crawl(source)
 
         if (source.id == "voxel") {
