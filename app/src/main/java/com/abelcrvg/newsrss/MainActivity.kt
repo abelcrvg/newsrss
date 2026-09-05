@@ -2,6 +2,7 @@ package com.abelcrvg.newsrss
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,7 +25,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
 import com.abelcrvg.newsrss.core.feed.FeedItem
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
@@ -106,6 +109,7 @@ private fun NewsRSSApp() {
     LaunchedEffect(Unit) { refresh() }
 
     if (article != null) {
+        BackHandler { article = null }
         ReaderContent(article = article!!, onBack = { article = null })
         return
     }
@@ -183,14 +187,24 @@ private fun NewsRSSApp() {
 private fun NewsCard(item: FeedItem, sources: List<FeedSource>, onClick: () -> Unit) {
     val sourceName = sources.firstOrNull { it.id == item.sourceId }?.name ?: item.sourceId
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(item.title, style = MaterialTheme.typography.titleLarge)
-            item.summary?.takeIf { it.isNotBlank() }?.let {
-                Spacer(Modifier.height(8.dp))
-                Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 3)
+        Column {
+            item.imageUrl?.takeIf { it.isNotBlank() }?.let { imageUrl ->
+                AsyncImage(
+                    model = imageUrl,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxWidth().height(190.dp),
+                    contentScale = ContentScale.Crop
+                )
             }
-            Spacer(Modifier.height(10.dp))
-            Text("$sourceName  •  ${relativeTime(item.publishedAt)}", style = MaterialTheme.typography.labelMedium)
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(item.title, style = MaterialTheme.typography.titleLarge)
+                item.summary?.takeIf { it.isNotBlank() }?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 3)
+                }
+                Spacer(Modifier.height(10.dp))
+                Text("$sourceName  •  ${relativeTime(item.publishedAt)}", style = MaterialTheme.typography.labelMedium)
+            }
         }
     }
 }
@@ -202,6 +216,15 @@ private fun ReaderContent(article: Article, onBack: () -> Unit) {
         Button(onClick = onBack) { Text("← Voltar") }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 14.dp)) {
             item {
+                article.heroImageUrl?.let { imageUrl ->
+                    AsyncImage(
+                        model = imageUrl,
+                        contentDescription = article.title,
+                        modifier = Modifier.fillMaxWidth().height(220.dp),
+                        contentScale = ContentScale.Crop
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
                 Text(article.title, style = MaterialTheme.typography.headlineMedium)
                 article.subtitle?.let { Text(it, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 8.dp)) }
                 article.author?.let { Text("Por $it", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp)) }
@@ -215,7 +238,12 @@ private fun ReaderContent(article: Article, onBack: () -> Unit) {
                         block.items.forEachIndexed { index, text -> Text(if (block.ordered) "${index + 1}. $text" else "• $text", style = MaterialTheme.typography.bodyLarge) }
                     }
                     is ArticleBlock.Image -> Column {
-                        Text("Imagem", style = MaterialTheme.typography.labelMedium)
+                        AsyncImage(
+                            model = block.url,
+                            contentDescription = block.altText ?: block.caption,
+                            modifier = Modifier.fillMaxWidth().height(220.dp),
+                            contentScale = ContentScale.Fit
+                        )
                         block.caption?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
                     }
                 }
