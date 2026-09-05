@@ -19,20 +19,27 @@ import java.time.format.DateTimeFormatter
 class HomepageNewsCrawler {
     suspend fun crawl(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
-            val firstPage = fetch(source.siteUrl)
             val baseHost = URI(source.siteUrl).host?.removePrefix("www.") ?: error("URL inválida")
-            val documents = mutableListOf(firstPage)
+            val documents = mutableListOf<Document>()
 
-            if (isGe(source, baseHost)) {
-                for (page in 2..GE_MAX_PAGES) {
-                    runCatching { fetch("${source.siteUrl.trimEnd('/')}/index/feed/pagina-$page.ghtml") }
-                        .onSuccess { documents += it }
+            // Globo portals expose a chronological plantao/feed that is much more
+            // reliable than trying to infer cards from the visual homepage.
+            if (isGloboPortal(source, baseHost)) {
+                val plantaoUrls = buildList {
+                    add("${source.siteUrl.trimEnd('/')}/plantao/")
+                    for (page in 2..GLOBO_MAX_PAGES) {
+                        add("${source.siteUrl.trimEnd('/')}/plantao/index/feed/pagina-$page.ghtml")
+                    }
                 }
+                plantaoUrls.forEach { url -> runCatching { fetch(url) }.onSuccess { documents += it } }
             }
+
+            if (documents.isEmpty()) documents += fetch(source.siteUrl)
 
             val candidates = documents.flatMap { document ->
                 document.select("a[href]").mapNotNull { link -> candidate(source, baseHost, link, document) }
-            }.groupBy { it.item.url }
+            }
+                .groupBy { it.item.url }
                 .values
                 .map { it.maxBy { candidate -> candidate.score }.item }
                 .distinctBy { it.url }
@@ -61,25 +68,29 @@ class HomepageNewsCrawler {
         if (title.length !in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH) return null
 
         val article = link.closest("article")
-        val card = link.closest("[class*=card], [class*=story], [class*=headline], [class*=noticia], [class*=materia], [class*=post], [class*=feed]")
-        val context = article ?: card ?: link.closest("main") ?: link.parent() ?: return null
+        val card = link.closest(
+            "[class*=feed-post], [class*=feed-item], [class*=card], [class*=story], " +
+                "[class*=headline], [class*=noticia], [class*=materia], [class*=post], [class*=feed]"
+        )
+        val context = article ?: card ?: link.parent() ?: return null
         val contextText = context.text().replace(Regex("\\s+"), " ").trim()
 
         var score = 0
-        if (article != null) score += 10
-        if (card != null) score += 5
+        if (article != null) score += 12
+        if (card != null) score += 8
         if (link.closest("[itemtype*=Article], [itemtype*=NewsArticle]") != null) score += 9
-        if (url.contains("/noticia/", true)) score += 10
+        if (isGloboPortal(source, baseHost) && url.contains("/noticia/", true)) score += 8
+        if (url.contains("/materia/", true)) score += 5
         if (url.matches(Regex(".*20\\d{2}/\\d{2}/\\d{2}.*"))) score += 5
         if (title.length >= 45) score += 2
-        if (context.selectFirst("img, picture, source[srcset], source[data-srcset]") != null) score += 4
-        if (context.selectFirst("time") != null) score += 5
-        if (isGe(source, baseHost) && url.contains("/noticia/", true)) score += 6
-        if (isNavigationLike(link, url)) score -= 15
+        if (findImageInContext(link, context) != null) score += 5
+        if (findDateText(link, context) != null) score += 5
+        if (isNavigationLike(link, url)) score -= 20
         if (score < MIN_SCORE) return null
 
-        val imageUrl = extractImage(link, context, document)
-        val publishedAt = extractPublishedAt(context, document, url, contextText)
+        val imageUrl = findImageInContext(link, context)
+            ?: extractImageFromDocument(document, url)
+        val publishedAt = extractPublishedAt(link, context, document, url, contextText)
         val summary = context.select("p")
             .map { it.text().replace(Regex("\\s+"), " ").trim() }
             .firstOrNull { it.length >= 30 && it != title }
@@ -97,31 +108,42 @@ class HomepageNewsCrawler {
         )
     }
 
-    private fun extractImage(link: Element, context: Element, document: Document): String? {
-        val nodes = listOfNotNull(
-            link.selectFirst("img"),
-            link.selectFirst("picture img"),
-            context.selectFirst("img"),
-            context.selectFirst("picture img")
-        )
-        for (node in nodes) {
-            imageSource(node)?.let { return it }
-        }
+    private fun findImageInContext(link: Element, context: Element): String? {
+        val nodes = buildList {
+            link.select("img, picture img, source").forEach { add(it) }
+            context.select("img, picture img, source").take(8).forEach { add(it) }
+        }.distinct()
 
-        context.selectFirst("source[srcset], img[srcset], source[data-srcset], img[data-srcset]")?.let {
-            imageSource(it)?.let { url -> return url }
+        nodes.forEach { node ->
+            imageSource(node)?.let { url ->
+                if (!looksLikeLogo(url)) return url
+            }
         }
+        return null
+    }
 
+    private fun extractImageFromDocument(document: Document, articleUrl: String): String? {
         val metadata = document.select("meta[property=og:image][content], meta[name=twitter:image][content]")
             .mapNotNull { it.attr("content").takeIf(String::isNotBlank) }
-            .firstOrNull()
-        if (metadata != null) return normalizeImageUrl(metadata, document.baseUri()).takeIf(String::isNotBlank)
+            .map { normalizeImageUrl(it, document.baseUri()) }
+            .firstOrNull { it.isNotBlank() && !looksLikeLogo(it) }
+        if (metadata != null) return metadata
 
+        // Some Globo cards keep the image in a background-image declaration.
+        document.select("[style*=background-image]").forEach { element ->
+            val style = element.attr("style")
+            val match = Regex("url\\(['\\\"]?([^'\\\")]+)").find(style)?.groupValues?.get(1)
+            val image = match?.let { normalizeImageUrl(it, document.baseUri()) }
+            if (!image.isNullOrBlank() && !looksLikeLogo(image) && articleUrl.isNotBlank()) return image
+        }
         return null
     }
 
     private fun imageSource(image: Element): String? {
-        val attrs = listOf("src", "data-src", "data-lazy-src", "data-original", "data-image", "data-url", "data-thumb")
+        val attrs = listOf(
+            "src", "data-src", "data-lazy-src", "data-original", "data-image", "data-url",
+            "data-thumb", "data-image-url", "data-bg", "data-bg-src", "data-background-image"
+        )
         attrs.firstNotNullOfOrNull { image.attr(it).takeIf(String::isNotBlank) }
             ?.let { normalizeImageUrl(it, image.baseUri()).takeIf(String::isNotBlank) }
             ?.let { return it }
@@ -136,8 +158,21 @@ class HomepageNewsCrawler {
         return null
     }
 
-    private fun extractPublishedAt(context: Element, document: Document, url: String, text: String): Instant? {
+    private fun looksLikeLogo(url: String): Boolean {
+        val value = url.lowercase()
+        return listOf("logo", "brand", "avatar", "icon", "favicon", "placeholder", "sprite").any(value::contains)
+    }
+
+    private fun extractPublishedAt(
+        link: Element,
+        context: Element,
+        document: Document,
+        url: String,
+        text: String
+    ): Instant? {
         val values = mutableListOf<String>()
+        values += link.select("time[datetime], time[content], [itemprop=datePublished], [itemprop=dateModified]")
+            .flatMap { e -> listOf(e.attr("datetime"), e.attr("content"), e.attr("datePublished"), e.text()) }
         values += context.select("time[datetime], time[content], [itemprop=datePublished], [itemprop=dateModified], [data-published], [data-date]")
             .flatMap { e -> listOf(e.attr("datetime"), e.attr("content"), e.attr("datePublished"), e.attr("data-published"), e.attr("data-date"), e.text()) }
         values += context.select("meta[property=article:published_time], meta[property=datePublished], meta[name=date]")
@@ -146,6 +181,13 @@ class HomepageNewsCrawler {
             .flatMap { e -> listOf(e.attr("datetime"), e.attr("content"), e.attr("data-date"), e.attr("data-datetime"), e.text()) }
 
         values.asSequence().mapNotNull { parseDate(it) ?: parseRelativeDate(it) }.firstOrNull()?.let { return it }
+
+        // The visible "Há X horas/minutos" in G1/ge is often a sibling of the
+        // anchor rather than a child of the card. Walk nearby ancestors/siblings.
+        findDateText(link, context)?.let { nearby ->
+            parseDate(nearby)?.let { return it }
+            parseRelativeDate(nearby)?.let { return it }
+        }
         parseRelativeDate(text)?.let { return it }
 
         DATE_IN_URL_REGEX.find(url)?.let { match ->
@@ -160,6 +202,27 @@ class HomepageNewsCrawler {
             }
         }
         return null
+    }
+
+    private fun findDateText(link: Element, context: Element): String? {
+        val dateRegex = Regex("(?:há|ha)\\s+\\d+\\s*(?:min|minuto|minutos|h|hora|horas|d|dia|dias)|\\bontem\\b|\\bagora\\b", RegexOption.IGNORE_CASE)
+        val elements = buildList {
+            add(link)
+            addAll(link.parent()?.children().orEmpty())
+            var parent = link.parent()
+            repeat(4) {
+                if (parent != null) {
+                    add(parent)
+                    addAll(parent.children())
+                    parent = parent?.parent()
+                }
+            }
+            add(context)
+        }
+        return elements.asSequence()
+            .map { it.text().replace(Regex("\\s+"), " ").trim() }
+            .mapNotNull { dateRegex.find(it)?.value }
+            .firstOrNull()
     }
 
     private fun parseRelativeDate(value: String?): Instant? {
@@ -206,8 +269,8 @@ class HomepageNewsCrawler {
             .takeIf { it.startsWith("http://") || it.startsWith("https://") } ?: ""
     }
 
-    private fun isGe(source: FeedSource, baseHost: String): Boolean =
-        baseHost == "ge.globo.com" || source.id == "ge" || source.name.equals("ge", true)
+    private fun isGloboPortal(source: FeedSource, baseHost: String): Boolean =
+        baseHost == "g1.globo.com" || baseHost == "ge.globo.com" || source.id == "g1" || source.id == "ge"
 
     private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf(String::isNotBlank)?.let {
         runCatching { Instant.parse(it) }.getOrNull()
@@ -223,8 +286,8 @@ class HomepageNewsCrawler {
 
     private companion object {
         const val TIMEOUT = 20_000
-        const val MAX_ITEMS = 100
-        const val GE_MAX_PAGES = 5
+        const val MAX_ITEMS = 150
+        const val GLOBO_MAX_PAGES = 10
         const val MIN_SCORE = 3
         const val MIN_TITLE_LENGTH = 25
         const val MAX_TITLE_LENGTH = 180
