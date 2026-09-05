@@ -1,8 +1,10 @@
 package com.abelcrvg.newsrss.data.extraction
 
+import com.abelcrvg.newsrss.NewsRssApplication
 import com.abelcrvg.newsrss.core.extraction.ArticleExtractor
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
+import com.abelcrvg.newsrss.data.translation.OnDeviceTranslator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
@@ -13,7 +15,7 @@ import java.time.OffsetDateTime
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** Generic reader-mode extractor for publicly available article HTML. */
+/** Generic reader-mode extractor. Public article text is translated to Portuguese on-device. */
 class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleExtractor {
     override suspend fun extract(url: String): Result<Article> = withContext(Dispatchers.IO) {
         runCatching {
@@ -23,7 +25,12 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
                 .header("Accept-Language", "pt-BR,pt;q=0.9,en;q=0.8").get()
             removeNoise(document)
-            val title = firstNonBlank(document.select("meta[property=og:title]").attr("content"), document.select("meta[name=twitter:title]").attr("content"), document.select("h1").first()?.text(), document.title()) ?: error("Article title not found")
+            val title = firstNonBlank(
+                document.select("meta[property=og:title]").attr("content"),
+                document.select("meta[name=twitter:title]").attr("content"),
+                document.select("h1").first()?.text(),
+                document.title()
+            ) ?: error("Article title not found")
             val root = findContentRoot(document) ?: error("Article content not found")
             var blocks = extractBlocks(root)
             var textLength = blocks.joinToString(" ") { textOf(it) }.length
@@ -32,17 +39,37 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                 for (candidate in alternatives.sortedByDescending(::score)) {
                     val candidateBlocks = extractBlocks(candidate)
                     val candidateLength = candidateBlocks.joinToString(" ") { textOf(it) }.length
-                    if (candidateLength > textLength) { blocks = candidateBlocks; textLength = candidateLength }
+                    if (candidateLength > textLength) {
+                        blocks = candidateBlocks
+                        textLength = candidateLength
+                    }
                     if (textLength >= MIN_CONTENT_LENGTH) break
                 }
             }
             require(textLength >= MIN_CONTENT_LENGTH) { "Extracted content is too short" }
-            Article(
-                id = url.hashCode().toUInt().toString(16), sourceId = URI(url).host.orEmpty(), url = url, title = title,
-                subtitle = firstNonBlank(document.select("meta[name=description]").attr("content"), document.select("meta[property=og:description]").attr("content"), document.select("meta[name=twitter:description]").attr("content")),
-                author = extractAuthor(document), publishedAt = extractPublishedAt(document),
-                heroImageUrl = firstNonBlank(document.select("meta[property=og:image]").attr("content"), document.select("meta[name=twitter:image]").attr("content")), blocks = blocks
+
+            val article = Article(
+                id = url.hashCode().toUInt().toString(16),
+                sourceId = URI(url).host.orEmpty(),
+                url = url,
+                title = title,
+                subtitle = firstNonBlank(
+                    document.select("meta[name=description]").attr("content"),
+                    document.select("meta[property=og:description]").attr("content"),
+                    document.select("meta[name=twitter:description]").attr("content")
+                ),
+                author = extractAuthor(document),
+                publishedAt = extractPublishedAt(document),
+                heroImageUrl = firstNonBlank(
+                    document.select("meta[property=og:image]").attr("content"),
+                    document.select("meta[name=twitter:image]").attr("content")
+                ),
+                blocks = blocks
             )
+
+            // Translation is intentionally performed only when an article is opened.
+            // This keeps feed refreshes fast and avoids unnecessary model downloads.
+            OnDeviceTranslator(NewsRssApplication.appContext).translateArticle(article)
         }
     }
 
@@ -57,7 +84,8 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         return document.body().select("div,section").maxByOrNull(::score)
     }
 
-    private fun score(element: Element): Int = element.text().length + element.select("p").size * 260 + element.select("h2,h3,h4").size * 80 + element.select("img").size * 25 - element.select("a").text().length / 3
+    private fun score(element: Element): Int =
+        element.text().length + element.select("p").size * 260 + element.select("h2,h3,h4").size * 80 + element.select("img").size * 25 - element.select("a").text().length / 3
 
     private fun extractBlocks(root: Element): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
@@ -67,7 +95,6 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                 "h2", "h3", "h4" -> element.text().trim().takeIf { it.isNotBlank() }?.let { result += ArticleBlock.Heading(it, element.tagName().drop(1).toInt()) }
                 "blockquote" -> element.text().trim().takeIf { it.isNotBlank() }?.let { result += ArticleBlock.Quote(it) }
                 "ul", "ol" -> {
-                    // :scope is not supported by all Jsoup selector versions used by Android builds.
                     val items = element.children().filter { it.tagName() == "li" }.map { it.text().trim() }.filter { it.isNotBlank() }
                     if (items.isNotEmpty()) result += ArticleBlock.ListBlock(items, element.tagName() == "ol")
                 }
@@ -79,15 +106,34 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     }
 
     private fun addImage(result: MutableList<ArticleBlock>, image: Element, caption: String?) {
-        val src = firstNonBlank(image.absUrl("src"), image.absUrl("data-src"), image.absUrl("data-lazy-src"), image.absUrl("data-original"), image.absUrl("data-image"), image.absUrl("data-lazy"), image.absUrl("data-flickity-lazyload")) ?: return
+        val src = firstNonBlank(
+            image.absUrl("src"), image.absUrl("data-src"), image.absUrl("data-lazy-src"),
+            image.absUrl("data-original"), image.absUrl("data-image"), image.absUrl("data-lazy"),
+            image.absUrl("data-flickity-lazyload")
+        ) ?: return
         if (!src.startsWith("http://") && !src.startsWith("https://")) return
-        result += ArticleBlock.Image(src, caption?.trim()?.takeIf { it.isNotBlank() }, image.attr("alt").trim().takeIf { it.isNotBlank() })
+        result += ArticleBlock.Image(
+            src,
+            caption?.trim()?.takeIf { it.isNotBlank() },
+            image.attr("alt").trim().takeIf { it.isNotBlank() }
+        )
     }
 
-    private fun extractAuthor(document: org.jsoup.nodes.Document): String? = firstNonBlank(document.select("meta[name=author]").attr("content"), document.select("meta[property=article:author]").attr("content"), document.select("[rel=author]").first()?.text(), document.select(".author,.byline,.article-author,.article__author,.autor,.materia-cabecalho__autor").first()?.text())
+    private fun extractAuthor(document: org.jsoup.nodes.Document): String? = firstNonBlank(
+        document.select("meta[name=author]").attr("content"),
+        document.select("meta[property=article:author]").attr("content"),
+        document.select("[rel=author]").first()?.text(),
+        document.select(".author,.byline,.article-author,.article__author,.autor,.materia-cabecalho__autor").first()?.text()
+    )
 
     private fun extractPublishedAt(document: org.jsoup.nodes.Document): Instant? {
-        val meta = firstNonBlank(document.select("meta[property=article:published_time]").attr("content"), document.select("meta[property=datePublished]").attr("content"), document.select("meta[name=date]").attr("content"), document.select("meta[itemprop=datePublished]").attr("content"), document.select("time[datetime]").first()?.attr("datetime"))
+        val meta = firstNonBlank(
+            document.select("meta[property=article:published_time]").attr("content"),
+            document.select("meta[property=datePublished]").attr("content"),
+            document.select("meta[name=date]").attr("content"),
+            document.select("meta[itemprop=datePublished]").attr("content"),
+            document.select("time[datetime]").first()?.attr("datetime")
+        )
         parseDate(meta)?.let { return it }
         document.select("script[type=application/ld+json]").forEach { script ->
             DATE_PUBLISHED_REGEX.find(script.data())?.groupValues?.getOrNull(1)?.let { parseDate(it)?.let { date -> return date } }
@@ -96,7 +142,10 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     }
 
     private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf { it.isNotBlank() }?.let {
-        runCatching { Instant.parse(it) }.getOrNull() ?: runCatching { OffsetDateTime.parse(it).toInstant() }.getOrNull() ?: runCatching { ZonedDateTime.parse(it).toInstant() }.getOrNull() ?: runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
+        runCatching { Instant.parse(it) }.getOrNull()
+            ?: runCatching { OffsetDateTime.parse(it).toInstant() }.getOrNull()
+            ?: runCatching { ZonedDateTime.parse(it).toInstant() }.getOrNull()
+            ?: runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
     }
 
     private fun textOf(block: ArticleBlock): String = when (block) {
@@ -107,7 +156,8 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         is ArticleBlock.Image -> block.caption.orEmpty()
     }
 
-    private fun firstNonBlank(vararg values: String?): String? = values.asSequence().mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }.firstOrNull()
+    private fun firstNonBlank(vararg values: String?): String? =
+        values.asSequence().mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }.firstOrNull()
 
     private companion object {
         const val MIN_CONTENT_LENGTH = 120
