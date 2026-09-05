@@ -14,7 +14,7 @@ import java.time.format.DateTimeFormatter
 class JsoupFeedReader : FeedReader {
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
-            val feedUrl = source.feedUrl ?: discoverFeedUrl(source.siteUrl)
+            val feedUrl = source.feedUrl ?: discoverFeedUrl(source.siteUrl, source.name)
             val xml = Jsoup.connect(feedUrl)
                 .userAgent(USER_AGENT)
                 .referrer(REFERRER)
@@ -29,7 +29,7 @@ class JsoupFeedReader : FeedReader {
         }
     }
 
-    private fun discoverFeedUrl(siteUrl: String): String {
+    private fun discoverFeedUrl(siteUrl: String, sourceName: String): String {
         val document = Jsoup.connect(siteUrl)
             .userAgent(USER_AGENT)
             .referrer(REFERRER)
@@ -54,7 +54,7 @@ class JsoupFeedReader : FeedReader {
                     .contains("xml", true)
             }.getOrDefault(false)
         }?.let { return base + it }
-        error("Não foi possível encontrar um feed RSS/Atom para ${source.name}")
+        error("Não foi possível encontrar um feed RSS/Atom para $sourceName")
     }
 
     private fun parseFeed(source: FeedSource, xml: String): List<FeedItem> {
