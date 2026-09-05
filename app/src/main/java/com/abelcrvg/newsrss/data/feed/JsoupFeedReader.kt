@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
@@ -46,7 +47,7 @@ class JsoupFeedReader : FeedReader {
             FeedItem(
                 id = (source.id + cleanUrl).hashCode().toUInt().toString(16), sourceId = source.id, title = title, url = cleanUrl,
                 summary = firstText(entry, "description,summary,content")?.let { Jsoup.parse(it).text() },
-                publishedAt = parseDate(firstText(entry, "pubDate,published,updated,date")), imageUrl = extractImage(entry)
+                publishedAt = parseDate(firstText(entry, "pubDate,published,updated,date,dc\\:date,dcterms\\:created,dcterms\\:modified")), imageUrl = extractImage(entry)
             )
         }.distinctBy { it.url }
     }
@@ -60,10 +61,11 @@ class JsoupFeedReader : FeedReader {
 
     private fun firstText(entry: org.jsoup.nodes.Element, selector: String): String? = entry.selectFirst(selector)?.text()?.trim()?.takeIf { it.isNotBlank() }
 
-    private fun parseDate(value: String?): Instant? = value?.let {
-        runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
-            ?: runCatching { Instant.parse(it) }.getOrNull()
+    private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf { it.isNotBlank() }?.let {
+        runCatching { Instant.parse(it) }.getOrNull()
+            ?: runCatching { OffsetDateTime.parse(it).toInstant() }.getOrNull()
             ?: runCatching { ZonedDateTime.parse(it).toInstant() }.getOrNull()
+            ?: runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
     }
 
     private companion object {
