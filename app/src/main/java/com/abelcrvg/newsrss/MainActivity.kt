@@ -4,8 +4,10 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -24,7 +26,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
@@ -148,10 +152,17 @@ private fun NewsRSSApp() {
                         item { Text("Principais e recentes", style = MaterialTheme.typography.headlineSmall) }
                         items(items, key = { it.id }) { item ->
                             NewsCard(item, sources) {
-                                opening = true; error = null
+                                opening = true
+                                error = null
                                 scope.launch {
                                     JsoupArticleExtractor().extract(item.url)
-                                        .onSuccess { article = it }
+                                        .onSuccess { extracted ->
+                                            // Prefer the article page timestamp, but keep the
+                                            // feed timestamp as a reliable fallback.
+                                            article = extracted.copy(
+                                                publishedAt = extracted.publishedAt ?: item.publishedAt
+                                            )
+                                        }
                                         .onFailure { error = it.message ?: "Não foi possível abrir a notícia." }
                                     opening = false
                                 }
@@ -170,13 +181,35 @@ private fun NewsCard(item: FeedItem, sources: List<FeedSource>, onClick: () -> U
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column {
             item.imageUrl?.takeIf { it.isNotBlank() }?.let { imageUrl ->
-                AsyncImage(model = imageUrl, contentDescription = item.title, modifier = Modifier.fillMaxWidth().height(190.dp), contentScale = ContentScale.Crop)
+                Box(modifier = Modifier.fillMaxWidth().height(190.dp)) {
+                    AsyncImage(
+                        model = imageUrl,
+                        contentDescription = item.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                    Text(
+                        text = "$sourceName • ${publishedLabel(item.publishedAt)}",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.60f))
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
             }
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(item.title, style = MaterialTheme.typography.titleLarge)
-                item.summary?.takeIf { it.isNotBlank() }?.let { Spacer(Modifier.height(8.dp)); Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 3) }
+                item.summary?.takeIf { it.isNotBlank() }?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 3)
+                }
                 Spacer(Modifier.height(10.dp))
-                Text("$sourceName  •  ${publishedLabel(item.publishedAt)}", style = MaterialTheme.typography.labelMedium)
+                if (item.imageUrl.isNullOrBlank()) {
+                    Text("$sourceName  •  ${publishedLabel(item.publishedAt)}", style = MaterialTheme.typography.labelMedium)
+                }
             }
         }
     }
@@ -194,6 +227,11 @@ private fun ReaderContent(article: Article, onBack: () -> Unit) {
                     Spacer(Modifier.height(12.dp))
                 }
                 Text(article.title, style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    publishedLabel(article.publishedAt),
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
                 article.subtitle?.let { Text(it, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 8.dp)) }
                 article.author?.let { Text("Por $it", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp)) }
             }
