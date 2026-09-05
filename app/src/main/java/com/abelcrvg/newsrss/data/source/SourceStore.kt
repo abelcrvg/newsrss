@@ -14,7 +14,7 @@ class SourceStore(context: Context) {
         val raw = prefs.getString(KEY_SOURCES, null) ?: return defaults
         return runCatching {
             val array = JSONArray(raw)
-            buildList {
+            val stored = buildList {
                 for (i in 0 until array.length()) {
                     val item = array.getJSONObject(i)
                     add(
@@ -29,6 +29,10 @@ class SourceStore(context: Context) {
                     )
                 }
             }
+
+            // Keep user settings, but automatically add newly bundled default sources.
+            val storedIds = stored.map { it.id }.toSet()
+            stored + defaults.filterNot { it.id in storedIds }
         }.getOrDefault(defaults)
     }
 
