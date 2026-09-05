@@ -11,6 +11,8 @@ import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.time.LocalDateTime
+import java.time.ZoneId
 
 /** Finds likely news links directly from a site's homepage when RSS/Atom is unavailable. */
 class HomepageNewsCrawler {
@@ -71,7 +73,7 @@ class HomepageNewsCrawler {
         if (score < MIN_SCORE) return null
 
         val imageUrl = link.selectFirst("img")?.let(::imageSource) ?: article?.selectFirst("img")?.let(::imageSource)
-        val publishedAt = extractPublishedAt(context, document)
+        val publishedAt = extractPublishedAt(context, document, url)
         val summary = article?.select("p")?.map { it.text().replace(Regex("\\s+"), " ").trim() }?.firstOrNull { it.length >= 30 && it != title }
 
         return Candidate(
@@ -88,22 +90,47 @@ class HomepageNewsCrawler {
         )
     }
 
-    private fun extractPublishedAt(context: Element, document: org.jsoup.nodes.Document): Instant? {
+    private fun extractPublishedAt(context: Element, document: org.jsoup.nodes.Document, url: String): Instant? {
         val direct = sequenceOf(
             context.selectFirst("time[datetime]")?.attr("datetime"),
+            context.selectFirst("time[content]")?.attr("content"),
             context.selectFirst("time")?.text(),
             context.selectFirst("[itemprop=datePublished]")?.attr("datetime"),
             context.selectFirst("[itemprop=datePublished]")?.attr("content"),
+            context.selectFirst("[data-published]")?.attr("data-published"),
+            context.selectFirst("[data-date]")?.attr("data-date"),
             context.selectFirst("meta[property=article:published_time]")?.attr("content"),
-            context.selectFirst("meta[property=datePublished]")?.attr("content")
+            context.selectFirst("meta[property=datePublished]")?.attr("content"),
+            context.selectFirst("meta[name=date]")?.attr("content"),
+            context.selectFirst("meta[itemprop=datePublished]")?.attr("content")
         ).firstOrNull { !it.isNullOrBlank() }
         parseDate(direct)?.let { return it }
 
-        // Search JSON-LD for the article's canonical publication timestamp.
+        // Some portals expose the timestamp in a date-related attribute/class nearby.
+        val dateLike = context.select("[class*=date], [class*=time], [class*=data], [class*=published], [class*=publish]")
+            .asSequence()
+            .flatMap { element ->
+                sequenceOf(
+                    element.attr("datetime"), element.attr("content"), element.attr("data-date"),
+                    element.attr("data-datetime"), element.attr("data-published"), element.text()
+                )
+            }
+            .firstOrNull { !it.isNullOrBlank() }
+        parseDate(dateLike)?.let { return it }
+
+        // A URL containing an ISO-like publication date is a useful fallback.
+        DATE_IN_URL_REGEX.find(url)?.let { match ->
+            val date = match.groupValues[1]
+            val time = match.groupValues.getOrNull(2)?.replace('-', ':') ?: "00:00"
+            parseDate("${date}T$time:00")?.let { return it }
+        }
+
+        // Search JSON-LD, preferring an object that also contains the article URL/title.
         document.select("script[type=application/ld+json]").forEach { script ->
             val json = script.data()
-            val match = DATE_PUBLISHED_REGEX.find(json)?.groupValues?.getOrNull(1)
-            parseDate(match)?.let { return it }
+            DATE_PUBLISHED_REGEX.findAll(json).forEach { match ->
+                parseDate(match.groupValues.getOrNull(1))?.let { return it }
+            }
         }
         return null
     }
@@ -145,6 +172,10 @@ class HomepageNewsCrawler {
             ?: runCatching { OffsetDateTime.parse(it).toInstant() }.getOrNull()
             ?: runCatching { ZonedDateTime.parse(it).toInstant() }.getOrNull()
             ?: runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
+            ?: runCatching { OffsetDateTime.parse(it, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toInstant() }.getOrNull()
+            ?: runCatching { LocalDateTime.parse(it, DateTimeFormatter.ISO_LOCAL_DATE_TIME).atZone(ZoneId.systemDefault()).toInstant() }.getOrNull()
+            ?: runCatching { LocalDateTime.parse(it, DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")).atZone(ZoneId.systemDefault()).toInstant() }.getOrNull()
+            ?: runCatching { LocalDateTime.parse(it, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")).atZone(ZoneId.systemDefault()).toInstant() }.getOrNull()
     }
 
     private data class Candidate(val item: FeedItem, val score: Int)
@@ -158,5 +189,6 @@ class HomepageNewsCrawler {
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.1"
         const val REFERRER = "https://www.google.com/"
         val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
+        val DATE_IN_URL_REGEX = Regex("(20\\d{2}[-/]\\d{2}[-/]\\d{2})(?:[T/-](\\d{2}[-:]\\d{2}))?")
     }
 }
