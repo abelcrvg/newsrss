@@ -27,7 +27,7 @@ class HomepageNewsCrawler {
 
             val baseHost = URI(source.siteUrl).host?.removePrefix("www.") ?: error("URL inválida")
             val candidates = document.select("a[href]")
-                .mapNotNull { link -> candidate(source, baseHost, link) }
+                .mapNotNull { link -> candidate(source, baseHost, link, document) }
                 .groupBy { it.item.url }
                 .values
                 .map { matches -> matches.maxBy { it.score }.item }
@@ -40,7 +40,7 @@ class HomepageNewsCrawler {
         }
     }
 
-    private fun candidate(source: FeedSource, baseHost: String, link: Element): Candidate? {
+    private fun candidate(source: FeedSource, baseHost: String, link: Element, document: org.jsoup.nodes.Document): Candidate? {
         val url = link.absUrl("href").trim()
         if (!isValidUrl(url, baseHost)) return null
         val title = extractTitle(link)
@@ -71,7 +71,7 @@ class HomepageNewsCrawler {
         if (score < MIN_SCORE) return null
 
         val imageUrl = link.selectFirst("img")?.let(::imageSource) ?: article?.selectFirst("img")?.let(::imageSource)
-        val publishedAt = extractPublishedAt(context, document = link.ownerDocument())
+        val publishedAt = extractPublishedAt(context, document)
         val summary = article?.select("p")?.map { it.text().replace(Regex("\\s+"), " ").trim() }?.firstOrNull { it.length >= 30 && it != title }
 
         return Candidate(
