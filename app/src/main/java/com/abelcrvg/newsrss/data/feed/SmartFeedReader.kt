@@ -22,6 +22,13 @@ class SmartFeedReader(
             }
         }
 
+        // G1 is more reliable when read directly from its main site. Do not use
+        // G1's RSS here, so the app reflects the current homepage instead of an
+        // incomplete/stale RSS catalog.
+        if (source.id == "g1") {
+            return@withContext homepageCrawler.crawl(source)
+        }
+
         val rssResult = rssReader.read(source)
         val rssItems = rssResult.getOrNull().orEmpty()
 
