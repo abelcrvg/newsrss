@@ -8,6 +8,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URI
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
@@ -70,7 +71,7 @@ class HomepageNewsCrawler {
         if (score < MIN_SCORE) return null
 
         val imageUrl = link.selectFirst("img")?.let(::imageSource) ?: article?.selectFirst("img")?.let(::imageSource)
-        val publishedAt = context.selectFirst("time[datetime]")?.attr("datetime")?.let(::parseDate) ?: context.selectFirst("time")?.text()?.let(::parseDate)
+        val publishedAt = extractPublishedAt(context, document = link.ownerDocument())
         val summary = article?.select("p")?.map { it.text().replace(Regex("\\s+"), " ").trim() }?.firstOrNull { it.length >= 30 && it != title }
 
         return Candidate(
@@ -85,6 +86,26 @@ class HomepageNewsCrawler {
             ),
             score
         )
+    }
+
+    private fun extractPublishedAt(context: Element, document: org.jsoup.nodes.Document): Instant? {
+        val direct = sequenceOf(
+            context.selectFirst("time[datetime]")?.attr("datetime"),
+            context.selectFirst("time")?.text(),
+            context.selectFirst("[itemprop=datePublished]")?.attr("datetime"),
+            context.selectFirst("[itemprop=datePublished]")?.attr("content"),
+            context.selectFirst("meta[property=article:published_time]")?.attr("content"),
+            context.selectFirst("meta[property=datePublished]")?.attr("content")
+        ).firstOrNull { !it.isNullOrBlank() }
+        parseDate(direct)?.let { return it }
+
+        // Search JSON-LD for the article's canonical publication timestamp.
+        document.select("script[type=application/ld+json]").forEach { script ->
+            val json = script.data()
+            val match = DATE_PUBLISHED_REGEX.find(json)?.groupValues?.getOrNull(1)
+            parseDate(match)?.let { return it }
+        }
+        return null
     }
 
     private fun extractTitle(link: Element): String = listOf(
@@ -121,8 +142,9 @@ class HomepageNewsCrawler {
 
     private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf { it.isNotBlank() }?.let {
         runCatching { Instant.parse(it) }.getOrNull()
-            ?: runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
+            ?: runCatching { OffsetDateTime.parse(it).toInstant() }.getOrNull()
             ?: runCatching { ZonedDateTime.parse(it).toInstant() }.getOrNull()
+            ?: runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
     }
 
     private data class Candidate(val item: FeedItem, val score: Int)
@@ -135,5 +157,6 @@ class HomepageNewsCrawler {
         const val MAX_TITLE_LENGTH = 180
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.1"
         const val REFERRER = "https://www.google.com/"
+        val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
     }
 }
