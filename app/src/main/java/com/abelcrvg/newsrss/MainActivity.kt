@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -61,8 +62,8 @@ private fun NewsRSSApp() {
     var selectedCategory by remember { mutableStateOf<NewsCategory?>(null) }
     var manageSources by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
-    var returnIndex by remember { mutableIntStateOf(0) }
-    var returnOffset by remember { mutableIntStateOf(0) }
+    var returnIndex by rememberSaveable { mutableIntStateOf(0) }
+    var returnOffset by rememberSaveable { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
 
     fun persist(newSources: List<FeedSource>) {
@@ -180,7 +181,10 @@ private fun NewsRSSApp() {
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 20.dp)) }
                     if (opening) Row(modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { CircularProgressIndicator(); Text("Abrindo notícia...") }
                     LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(20.dp)) {
-                        item { Text(if (selectedCategory == null) "Principais e recentes" else selectedCategory!!.label, style = MaterialTheme.typography.headlineSmall) }
+                        item {
+                            val heading = selectedCategory?.label ?: "Principais e recentes"
+                            Text(heading, style = MaterialTheme.typography.headlineSmall)
+                        }
                         items(visibleItems, key = { it.id }) { item ->
                             NewsCard(item, sources) {
                                 returnIndex = listState.firstVisibleItemIndex
@@ -228,22 +232,26 @@ private fun SourceManager(
         Spacer(Modifier.height(8.dp)); Text("Ative, desative ou altere a categoria de cada fonte.", style = MaterialTheme.typography.bodyMedium); Spacer(Modifier.height(14.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(value = urlInput, onValueChange = onUrlChange, modifier = Modifier.weight(1f), singleLine = true, label = { Text("Adicionar site") }, placeholder = { Text("https://exemplo.com") })
-            Button(onClick = onAdd, enabled = urlInput.isNotBlank()) { Text("Adicionar") }
+            Button(onClick = onAdd, modifier = Modifier.align(Alignment.CenterVertically)) { Text("Adicionar") }
         }
-        sourceError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        sourceError?.let { Spacer(Modifier.height(8.dp)); Text(it, color = MaterialTheme.colorScheme.error) }
         Spacer(Modifier.height(14.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
             items(sources, key = { it.id }) { source ->
                 Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) { Text(source.name, style = MaterialTheme.typography.titleMedium); Text(source.siteUrl, style = MaterialTheme.typography.bodySmall, maxLines = 1) }
-                            Switch(checked = source.enabled, onCheckedChange = { onToggle(source) })
+                    Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(source.name, style = MaterialTheme.typography.titleMedium)
+                            Text(source.siteUrl, style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(4.dp))
+                            TextButton(onClick = {
+                                val next = NewsCategory.entries[(NewsCategory.entries.indexOf(source.category) + 1) % NewsCategory.entries.size]
+                                onCategoryChange(source, next)
+                            }) { Text(source.category.label) }
                         }
-                        Spacer(Modifier.height(8.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedButton(onClick = { val next = NewsCategory.entries[(source.category.ordinal + 1) % NewsCategory.entries.size]; onCategoryChange(source, next) }) { Text("Categoria: ${source.category.label}") }
-                            if (source.id.startsWith("custom-")) { Spacer(Modifier.width(8.dp)); OutlinedButton(onClick = { onDelete(source) }) { Text("Excluir") } }
+                        Switch(checked = source.enabled, onCheckedChange = { onToggle(source) })
+                        if (source.id.startsWith("custom-")) {
+                            TextButton(onClick = { onDelete(source) }) { Text("Excluir") }
                         }
                     }
                 }
@@ -255,21 +263,17 @@ private fun SourceManager(
 @Composable
 private fun NewsCard(item: FeedItem, sources: List<FeedSource>, onClick: () -> Unit) {
     val source = sources.firstOrNull { it.id == item.sourceId }
-    val sourceName = source?.name ?: item.sourceId
-    val categoryLabel = source?.category?.label
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column {
-            item.imageUrl?.takeIf { it.isNotBlank() }?.let { imageUrl ->
-                Box(modifier = Modifier.fillMaxWidth().height(190.dp)) {
-                    AsyncImage(model = imageUrl, contentDescription = item.title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                    Text(listOfNotNull(categoryLabel, sourceName, publishedLabel(item.publishedAt)).joinToString(" • "), color = Color.White, style = MaterialTheme.typography.labelMedium, modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color.Black.copy(alpha = 0.60f)).padding(horizontal = 12.dp, vertical = 8.dp))
-                }
-            }
-            Column(modifier = Modifier.padding(16.dp)) {
+            item.imageUrl?.let { image -> AsyncImage(model = image, contentDescription = item.title, modifier = Modifier.fillMaxWidth().height(190.dp), contentScale = ContentScale.Crop) }
+            Column(modifier = Modifier.padding(14.dp)) {
                 Text(item.title, style = MaterialTheme.typography.titleLarge)
-                item.summary?.takeIf { it.isNotBlank() }?.let { Spacer(Modifier.height(8.dp)); Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 3) }
-                Spacer(Modifier.height(10.dp))
-                if (item.imageUrl.isNullOrBlank()) Text(listOfNotNull(categoryLabel, sourceName, publishedLabel(item.publishedAt)).joinToString("  •  "), style = MaterialTheme.typography.labelMedium)
+                item.summary?.takeIf { it.isNotBlank() }?.let { Spacer(Modifier.height(6.dp)); Text(it, maxLines = 3, style = MaterialTheme.typography.bodyMedium) }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(source?.name ?: "Fonte", style = MaterialTheme.typography.labelMedium)
+                    item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelMedium) }
+                }
             }
         }
     }
@@ -277,31 +281,35 @@ private fun NewsCard(item: FeedItem, sources: List<FeedSource>, onClick: () -> U
 
 @Composable
 private fun ReaderContent(article: Article, onBack: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-        Spacer(Modifier.height(12.dp)); Button(onClick = onBack) { Text("← Voltar") }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 14.dp)) {
-            item {
-                article.heroImageUrl?.let { imageUrl -> AsyncImage(model = imageUrl, contentDescription = article.title, modifier = Modifier.fillMaxWidth().height(220.dp), contentScale = ContentScale.Crop); Spacer(Modifier.height(12.dp)) }
-                Text(article.title, style = MaterialTheme.typography.headlineMedium)
-                Text(publishedLabel(article.publishedAt), style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
-                article.subtitle?.let { Text(it, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 8.dp)) }
-                article.author?.let { Text("Por $it", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp)) }
-            }
-            items(article.blocks) { block ->
-                when (block) {
-                    is ArticleBlock.Paragraph -> Text(block.text, style = MaterialTheme.typography.bodyLarge)
-                    is ArticleBlock.Heading -> Text(block.text, style = MaterialTheme.typography.titleLarge)
-                    is ArticleBlock.Image -> { AsyncImage(model = block.url, contentDescription = block.altText ?: article.title, modifier = Modifier.fillMaxWidth().height(220.dp), contentScale = ContentScale.Crop); block.caption?.let { Text(it, style = MaterialTheme.typography.bodySmall) } }
-                    is ArticleBlock.Quote -> Text("“${block.text}”${block.author?.let { " — $it" } ?: ""}", style = MaterialTheme.typography.bodyLarge)
-                    is ArticleBlock.ListBlock -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) { block.items.forEachIndexed { index, text -> Text(if (block.ordered) "${index + 1}. $text" else "• $text", style = MaterialTheme.typography.bodyLarge) } }
+    Scaffold(topBar = {
+        TopAppBar(title = { Text(article.title) }, navigationIcon = { TextButton(onClick = onBack) { Text("Voltar") } })
+    }) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            item { Text(article.title, style = MaterialTheme.typography.headlineMedium) }
+            article.subtitle?.let { item { Text(it, style = MaterialTheme.typography.titleMedium) } }
+            article.author?.let { item { Text("Por $it", style = MaterialTheme.typography.labelLarge) } }
+            article.publishedAt?.let { item { Text(publishedLabel(it), style = MaterialTheme.typography.labelMedium) } }
+            article.blocks.forEach { block ->
+                item {
+                    when (block) {
+                        is ArticleBlock.Paragraph -> Text(block.text, style = MaterialTheme.typography.bodyLarge)
+                        is ArticleBlock.Heading -> Text(block.text, style = if (block.level <= 2) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge)
+                        is ArticleBlock.Image -> Column {
+                            AsyncImage(model = block.url, contentDescription = block.altText ?: block.caption, modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp), contentScale = ContentScale.FillWidth)
+                            block.caption?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                        }
+                        is ArticleBlock.Quote -> Text("“${block.text}”${block.author?.let { " — $it" } ?: ""}", style = MaterialTheme.typography.bodyLarge)
+                        is ArticleBlock.ListBlock -> Column {
+                            block.items.forEachIndexed { index, text -> Text(if (block.ordered) "${index + 1}. $text" else "• $text", style = MaterialTheme.typography.bodyLarge) }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-private fun publishedLabel(instant: Instant?): String {
-    if (instant == null) return "Data indisponível"
-    val formatter = java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale("pt", "BR")).withZone(ZoneId.systemDefault())
-    return formatter.format(instant)
+private fun publishedLabel(value: Instant): String {
+    val local = value.atZone(ZoneId.systemDefault())
+    return local.format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.getDefault()))
 }
