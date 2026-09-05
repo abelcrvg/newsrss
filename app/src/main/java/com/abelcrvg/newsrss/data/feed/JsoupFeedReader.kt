@@ -15,44 +15,22 @@ class JsoupFeedReader : FeedReader {
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
             val feedUrl = source.feedUrl ?: discoverFeedUrl(source.siteUrl, source.name)
-            val xml = Jsoup.connect(feedUrl)
-                .userAgent(USER_AGENT)
-                .referrer(REFERRER)
+            val xml = Jsoup.connect(feedUrl).userAgent(USER_AGENT).referrer(REFERRER)
                 .header("Accept", "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8")
                 .header("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.7,en;q=0.5")
-                .timeout(TIMEOUT)
-                .followRedirects(true)
-                .ignoreContentType(true)
-                .execute()
-                .body()
+                .timeout(TIMEOUT).followRedirects(true).ignoreContentType(true).execute().body()
             parseFeed(source, xml)
         }
     }
 
     private fun discoverFeedUrl(siteUrl: String, sourceName: String): String {
-        val document = Jsoup.connect(siteUrl)
-            .userAgent(USER_AGENT)
-            .referrer(REFERRER)
-            .header("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.7,en;q=0.5")
-            .timeout(TIMEOUT)
-            .followRedirects(true)
-            .get()
-
+        val document = Jsoup.connect(siteUrl).userAgent(USER_AGENT).referrer(REFERRER)
+            .header("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.7,en;q=0.5").timeout(TIMEOUT).followRedirects(true).get()
         document.select("link[type=application/rss+xml],link[type=application/atom+xml]")
-            .mapNotNull { it.absUrl("href").takeIf(String::isNotBlank) }
-            .firstOrNull()?.let { return it }
+            .mapNotNull { it.absUrl("href").takeIf(String::isNotBlank) }.firstOrNull()?.let { return it }
         val base = siteUrl.trimEnd('/')
         listOf("/rss", "/feed", "/rss.xml", "/feed.xml", "/atom.xml").firstOrNull { path ->
-            runCatching {
-                Jsoup.connect(base + path)
-                    .userAgent(USER_AGENT)
-                    .timeout(5_000)
-                    .ignoreContentType(true)
-                    .execute()
-                    .contentType()
-                    .orEmpty()
-                    .contains("xml", true)
-            }.getOrDefault(false)
+            runCatching { Jsoup.connect(base + path).userAgent(USER_AGENT).timeout(5_000).ignoreContentType(true).execute().contentType().orEmpty().contains("xml", true) }.getOrDefault(false)
         }?.let { return base + it }
         error("Não foi possível encontrar um feed RSS/Atom para $sourceName")
     }
@@ -66,19 +44,21 @@ class JsoupFeedReader : FeedReader {
             val url = if (atom) entry.select("link[href]").firstOrNull()?.attr("href") else entry.selectFirst("link")?.text()
             val cleanUrl = url?.trim()?.takeIf { it.startsWith("http://") || it.startsWith("https://") } ?: return@mapNotNull null
             FeedItem(
-                id = (source.id + cleanUrl).hashCode().toUInt().toString(16),
-                sourceId = source.id,
-                title = title,
-                url = cleanUrl,
+                id = (source.id + cleanUrl).hashCode().toUInt().toString(16), sourceId = source.id, title = title, url = cleanUrl,
                 summary = firstText(entry, "description,summary,content")?.let { Jsoup.parse(it).text() },
-                publishedAt = parseDate(firstText(entry, "pubDate,published,updated,date")),
-                imageUrl = entry.selectFirst("enclosure")?.attr("url")?.takeIf { it.startsWith("http") }
+                publishedAt = parseDate(firstText(entry, "pubDate,published,updated,date")), imageUrl = extractImage(entry)
             )
         }.distinctBy { it.url }
     }
 
-    private fun firstText(entry: org.jsoup.nodes.Element, selector: String): String? =
-        entry.selectFirst(selector)?.text()?.trim()?.takeIf { it.isNotBlank() }
+    private fun extractImage(entry: org.jsoup.nodes.Element): String? {
+        entry.selectFirst("enclosure[url]")?.attr("url")?.takeIf { it.startsWith("http") }?.let { return it }
+        entry.selectFirst("media\\:content[url]")?.attr("url")?.takeIf { it.startsWith("http") }?.let { return it }
+        entry.selectFirst("media\\:thumbnail[url]")?.attr("url")?.takeIf { it.startsWith("http") }?.let { return it }
+        return entry.selectFirst("img[src]")?.absUrl("src")?.takeIf { it.startsWith("http") }
+    }
+
+    private fun firstText(entry: org.jsoup.nodes.Element, selector: String): String? = entry.selectFirst(selector)?.text()?.trim()?.takeIf { it.isNotBlank() }
 
     private fun parseDate(value: String?): Instant? = value?.let {
         runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
