@@ -17,6 +17,9 @@ class JsoupFeedReader : FeedReader {
             val feedUrl = source.feedUrl ?: discoverFeedUrl(source.siteUrl)
             val xml = Jsoup.connect(feedUrl)
                 .userAgent(USER_AGENT)
+                .referrer(REFERRER)
+                .header("Accept", "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8")
+                .header("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.7,en;q=0.5")
                 .timeout(TIMEOUT)
                 .followRedirects(true)
                 .ignoreContentType(true)
@@ -27,15 +30,28 @@ class JsoupFeedReader : FeedReader {
     }
 
     private fun discoverFeedUrl(siteUrl: String): String {
-        val document = Jsoup.connect(siteUrl).userAgent(USER_AGENT).timeout(TIMEOUT).get()
+        val document = Jsoup.connect(siteUrl)
+            .userAgent(USER_AGENT)
+            .referrer(REFERRER)
+            .header("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.7,en;q=0.5")
+            .timeout(TIMEOUT)
+            .followRedirects(true)
+            .get()
+
         document.select("link[type=application/rss+xml],link[type=application/atom+xml]")
             .mapNotNull { it.absUrl("href").takeIf(String::isNotBlank) }
             .firstOrNull()?.let { return it }
         val base = siteUrl.trimEnd('/')
         listOf("/rss", "/feed", "/rss.xml", "/feed.xml", "/atom.xml").firstOrNull { path ->
             runCatching {
-                Jsoup.connect(base + path).userAgent(USER_AGENT).timeout(5_000)
-                    .ignoreContentType(true).execute().contentType().orEmpty().contains("xml", true)
+                Jsoup.connect(base + path)
+                    .userAgent(USER_AGENT)
+                    .timeout(5_000)
+                    .ignoreContentType(true)
+                    .execute()
+                    .contentType()
+                    .orEmpty()
+                    .contains("xml", true)
             }.getOrDefault(false)
         }?.let { return base + it }
         error("Não foi possível encontrar um feed RSS/Atom para ${source.name}")
@@ -71,7 +87,8 @@ class JsoupFeedReader : FeedReader {
     }
 
     private companion object {
-        const val TIMEOUT = 15_000
-        const val USER_AGENT = "NewsRSS/0.1 (Android; open-source reader)"
+        const val TIMEOUT = 20_000
+        const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.1"
+        const val REFERRER = "https://www.google.com/"
     }
 }
