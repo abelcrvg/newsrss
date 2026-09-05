@@ -8,6 +8,10 @@ import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.net.URI
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 
 /** Generic reader-mode extractor for publicly available article HTML. */
 class JsoupArticleExtractor(
@@ -40,8 +44,6 @@ class JsoupArticleExtractor(
             var blocks = extractBlocks(root)
             var textLength = blocks.joinToString(" ") { textOf(it) }.length
 
-            // Some publishers use a very generic container. If the first root was
-            // too sparse, try the strongest article-like containers before failing.
             if (textLength < MIN_CONTENT_LENGTH) {
                 val alternatives = document.select(
                     "article,main,[role=main],.article,.article-body,.article-content,.article__body," +
@@ -71,6 +73,7 @@ class JsoupArticleExtractor(
                     document.select("meta[name=twitter:description]").attr("content")
                 ),
                 author = extractAuthor(document),
+                publishedAt = extractPublishedAt(document),
                 heroImageUrl = firstNonBlank(
                     document.select("meta[property=og:image]").attr("content"),
                     document.select("meta[name=twitter:image]").attr("content")
@@ -82,7 +85,7 @@ class JsoupArticleExtractor(
 
     private fun removeNoise(document: org.jsoup.nodes.Document) {
         document.select(
-            "script,style,noscript,iframe,canvas,svg,form,nav,footer,header,aside," +
+            "script:not([type=application/ld+json]),style,noscript,iframe,canvas,svg,form,nav,footer,header,aside," +
                 "[role=navigation],[role=banner],[role=contentinfo]," +
                 ".ad,.ads,.advert,.advertisement,.social,.share,.comments,.comment," +
                 ".related,.recommendations,.recommended,.newsletter,.cookie,.cookies," +
@@ -143,7 +146,9 @@ class JsoupArticleExtractor(
             image.absUrl("data-src"),
             image.absUrl("data-lazy-src"),
             image.absUrl("data-original"),
-            image.absUrl("data-image")
+            image.absUrl("data-image"),
+            image.absUrl("data-lazy"),
+            image.absUrl("data-flickity-lazyload")
         ) ?: return
         if (!src.startsWith("http://") && !src.startsWith("https://")) return
         result += ArticleBlock.Image(
@@ -160,6 +165,33 @@ class JsoupArticleExtractor(
         document.select(".author,.byline,.article-author,.article__author,.autor,.materia-cabecalho__autor").first()?.text()
     )
 
+    private fun extractPublishedAt(document: org.jsoup.nodes.Document): Instant? {
+        val meta = firstNonBlank(
+            document.select("meta[property=article:published_time]").attr("content"),
+            document.select("meta[property=datePublished]").attr("content"),
+            document.select("meta[name=date]").attr("content"),
+            document.select("meta[itemprop=datePublished]").attr("content"),
+            document.select("time[datetime]").first()?.attr("datetime")
+        )
+        parseDate(meta)?.let { return it }
+
+        // JSON-LD is widely used by news publishers and usually contains the
+        // canonical publication timestamp even when the visible page omits it.
+        document.select("script[type=application/ld+json]").forEach { script ->
+            val json = script.data()
+            val match = DATE_PUBLISHED_REGEX.find(json)?.groupValues?.getOrNull(1)
+            parseDate(match)?.let { return it }
+        }
+        return null
+    }
+
+    private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf { it.isNotBlank() }?.let {
+        runCatching { Instant.parse(it) }.getOrNull()
+            ?: runCatching { OffsetDateTime.parse(it).toInstant() }.getOrNull()
+            ?: runCatching { ZonedDateTime.parse(it).toInstant() }.getOrNull()
+            ?: runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
+    }
+
     private fun textOf(block: ArticleBlock): String = when (block) {
         is ArticleBlock.Paragraph -> block.text
         is ArticleBlock.Heading -> block.text
@@ -175,5 +207,6 @@ class JsoupArticleExtractor(
     private companion object {
         const val MIN_CONTENT_LENGTH = 120
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36 NewsRSS/0.2"
+        val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
     }
 }
