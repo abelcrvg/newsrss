@@ -7,7 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Instant
 
-/** Uses RSS/Atom first and supplements short feeds with homepage crawling. */
+/** Uses RSS/Atom first and supplements it with direct site crawling when useful. */
 class SmartFeedReader(
     private val rssReader: FeedReader = JsoupFeedReader(),
     private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler()
@@ -16,35 +16,38 @@ class SmartFeedReader(
         val rssResult = rssReader.read(source)
         val rssItems = rssResult.getOrNull().orEmpty()
 
-        // Some publishers expose only a handful of items through RSS even though
-        // their homepage contains many more. Supplement short RSS results instead
-        // of treating a non-empty RSS response as complete.
-        if (rssItems.size >= MIN_RSS_ITEMS) return@withContext rssResult
+        // The Verge's RSS is intentionally not treated as the complete catalog.
+        // Always scan the public site sections too, then merge and deduplicate.
+        val shouldCrawlDirectly = source.id == "the-verge"
+        if (shouldCrawlDirectly || rssItems.size < MIN_RSS_ITEMS) {
+            val crawlResult = homepageCrawler.crawl(source)
+            val crawlItems = crawlResult.getOrNull().orEmpty()
+            val merged = (rssItems + crawlItems)
+                .distinctBy { it.url }
+                .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title })
+                .take(MAX_ITEMS)
 
-        val crawlResult = homepageCrawler.crawl(source)
-        val crawlItems = crawlResult.getOrNull().orEmpty()
-        val merged = (rssItems + crawlItems)
-            .distinctBy { it.url }
-            .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title })
-            .take(MAX_ITEMS)
+            if (merged.isNotEmpty()) return@withContext Result.success(merged)
+            if (rssResult.isSuccess) return@withContext rssResult
 
-        if (merged.isNotEmpty()) return@withContext Result.success(merged)
-
-        val rssError = rssResult.exceptionOrNull()?.message
-        val crawlError = crawlResult.exceptionOrNull()?.message
-        Result.failure(
-            IllegalStateException(
-                listOfNotNull(
-                    "Não foi possível obter notícias de ${source.name}.",
-                    rssError?.takeIf { it.isNotBlank() },
-                    crawlError?.takeIf { it.isNotBlank() }
-                ).joinToString(" ")
+            val rssError = rssResult.exceptionOrNull()?.message
+            val crawlError = crawlResult.exceptionOrNull()?.message
+            return@withContext Result.failure(
+                IllegalStateException(
+                    listOfNotNull(
+                        "Não foi possível obter notícias de ${source.name}.",
+                        rssError?.takeIf { it.isNotBlank() },
+                        crawlError?.takeIf { it.isNotBlank() }
+                    ).joinToString(" ")
+                )
             )
-        )
+        }
+
+        rssResult
     }
 
     private companion object {
         const val MIN_RSS_ITEMS = 10
-        const val MAX_ITEMS = 100
+        const val MAX_ITEMS = 150
     }
 }
