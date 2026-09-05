@@ -5,8 +5,8 @@ import java.time.Instant
 /**
  * Normalized representation of an article, independent of its original source.
  *
- * The extractor should preserve editorial structure (headings, paragraphs,
- * images, captions, quotes and lists) instead of reducing the article to plain text.
+ * The extractor preserves editorial structure and, for paragraphs, a small amount
+ * of inline HTML so emphasis such as bold text and links can survive reader mode.
  */
 data class Article(
     val id: String,
@@ -21,7 +21,10 @@ data class Article(
 )
 
 sealed interface ArticleBlock {
-    data class Paragraph(val text: String) : ArticleBlock
+    data class Paragraph(
+        val text: String,
+        val inlineHtml: String? = null
+    ) : ArticleBlock
     data class Heading(val text: String, val level: Int = 2) : ArticleBlock
     data class Image(
         val url: String,
