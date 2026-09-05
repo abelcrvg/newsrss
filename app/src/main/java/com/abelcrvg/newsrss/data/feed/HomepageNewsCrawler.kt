@@ -47,7 +47,7 @@ class HomepageNewsCrawler {
 
         val article = link.closest("article")
         val main = link.closest("main")
-        val context = article ?: main ?: link.parent()
+        val context = article ?: main ?: link.parent() ?: return null
         val contextText = context.text().replace(Regex("\\s+"), " ").trim().lowercase()
         val urlLower = url.lowercase()
         var score = 0
