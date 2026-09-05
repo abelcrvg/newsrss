@@ -24,6 +24,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                 .header("Accept-Language", "pt-BR,pt;q=0.9,en;q=0.8").get()
 
             val theVerge = isTheVerge(url)
+            val ge = isGe(url)
             removeNoise(document)
             val title = firstNonBlank(
                 document.select("meta[property=og:title]").attr("content"),
@@ -32,11 +33,11 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                 document.title()
             ) ?: error("Article title not found")
 
-            var blocks = if (theVerge) extractTheVergeBlocks(document) else emptyList()
+            var blocks = if (theVerge) extractTheVergeBlocks(document, ge) else emptyList()
             var textLength = blocks.sumOf { textOf(it).length }
 
             for (candidate in buildContentCandidates(document, theVerge).sortedByDescending(::score)) {
-                val candidateBlocks = extractBlocks(candidate, if (theVerge) 1 else 8)
+                val candidateBlocks = extractBlocks(candidate, if (theVerge) 1 else 8, ge)
                 val candidateLength = candidateBlocks.sumOf { textOf(it).length }
                 if (candidateLength > textLength) {
                     blocks = candidateBlocks
@@ -83,10 +84,13 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun isTheVerge(url: String): Boolean =
         URI(url).host.orEmpty().lowercase().removePrefix("www.") == "theverge.com"
 
-    private fun extractTheVergeBlocks(document: org.jsoup.nodes.Document): List<ArticleBlock> {
+    private fun isGe(url: String): Boolean =
+        URI(url).host.orEmpty().lowercase().removePrefix("www.") == "ge.globo.com"
+
+    private fun extractTheVergeBlocks(document: org.jsoup.nodes.Document, ge: Boolean): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
         document.select(".duet--article--article-body-component").forEach { component ->
-            extractBlocks(component, 1).forEach { block ->
+            extractBlocks(component, 1, ge).forEach { block ->
                 if (block !in result) result.add(block)
             }
         }
@@ -132,7 +136,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun score(element: Element): Int =
         element.text().length + element.select("p").size * 260 + element.select("h2,h3,h4").size * 80 + element.select("img").size * 25 - element.select("a").text().length / 3
 
-    private fun extractBlocks(root: Element, minParagraphLength: Int): List<ArticleBlock> {
+    private fun extractBlocks(root: Element, minParagraphLength: Int, ge: Boolean): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
         root.select("p,h2,h3,h4,blockquote,ul,ol,figure,img").forEach { element ->
             when (element.tagName()) {
@@ -143,11 +147,36 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                     val items = element.children().filter { it.tagName() == "li" }.map { it.text().trim() }.filter { it.isNotBlank() }
                     if (items.isNotEmpty()) result.add(ArticleBlock.ListBlock(items, element.tagName() == "ol"))
                 }
-                "figure" -> element.selectFirst("img")?.let { addImage(result, it, element.selectFirst("figcaption")?.text()) }
-                "img" -> if (element.parent()?.tagName() != "figure") addImage(result, element, null)
+                "figure" -> element.selectFirst("img")?.let { image ->
+                    if (!isNoiseImage(image, ge)) addImage(result, image, element.selectFirst("figcaption")?.text())
+                }
+                "img" -> if (element.parent()?.tagName() != "figure" && !isNoiseImage(element, ge)) addImage(result, element, null)
             }
         }
         return result.distinct()
+    }
+
+    /** GE pages contain team-lineup widgets with many club badges. They are decorative/navigation assets,
+     * not article content. Filtering them prevents a long sequence of shields from polluting reader mode. */
+    private fun isNoiseImage(image: Element, ge: Boolean): Boolean {
+        if (!ge) return false
+        val attributes = buildString {
+            append(image.className()).append(' ')
+            append(image.id()).append(' ')
+            append(image.attr("alt")).append(' ')
+            append(image.attr("title")).append(' ')
+            append(image.attr("src")).append(' ')
+            image.parents().take(4).forEach { parent ->
+                append(parent.className()).append(' ')
+                append(parent.id()).append(' ')
+            }
+        }.lowercase()
+        val markers = listOf(
+            "escudo", "escudos", "badge", "club-logo", "club_logo", "team-logo", "team_logo",
+            "team-badge", "team_badge", "crest", "club-badge", "club_badge", "logo-time", "logo time",
+            "abreviacao", "abreviação", "brasao", "brasão", "shield"
+        )
+        return markers.any(attributes::contains)
     }
 
     private fun addImage(result: MutableList<ArticleBlock>, image: Element, caption: String?) {
