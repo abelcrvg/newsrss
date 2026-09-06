@@ -30,8 +30,6 @@ class G1SiteCrawler {
                 for (page in 2..MAX_PLANTAO_PAGES) add("$base/plantao/index/feed/pagina-$page.ghtml")
             }
 
-            // G1 exposes a stable feed-post structure on the home. Use it first, then
-            // fall back to all internal /noticia/ anchors so new layouts do not silently disappear.
             val homepageItems = extractHomepage(homepage, source, baseHost)
             val plantaoItems = plantaoUrls.flatMap { url ->
                 runCatching { extractLinks(fetch(url), source, baseHost) }.getOrDefault(emptyList())
@@ -62,12 +60,9 @@ class G1SiteCrawler {
 
     private fun extractHomepage(document: Document, source: FeedSource, baseHost: String): List<FeedItem> {
         val structured = document.select(
-            "a.feed-post-link[href], a[class*=feed-post-link][href], article a[href*=/noticia/], " +
-                "a[href*=/noticia/][class*=feed-post][href]"
+            "a.feed-post-link[href], a[class*=feed-post-link][href], article a[href*=/noticia/], a[href*=/noticia/][class*=feed-post]"
         ).mapNotNull { link -> extractCardItem(link, source, baseHost) }
-
-        val fallback = extractLinks(document, source, baseHost)
-        return (structured + fallback).distinctBy { it.url }
+        return (structured + extractLinks(document, source, baseHost)).distinctBy { it.url }
     }
 
     private fun extractCardItem(link: Element, source: FeedSource, baseHost: String): FeedItem? {
@@ -83,8 +78,8 @@ class G1SiteCrawler {
         val summary = card?.select(".feed-post-body-resumo, [class*=resumo], p")
             ?.map { it.text().replace(Regex("\\s+"), " ").trim() }
             ?.firstOrNull { it.length >= 20 && it != title }
-        val image = if (card != null) extractImage(link, card, card.ownerDocument()) else null
-        val date = extractDate(link, card ?: link, card?.ownerDocument() ?: link.ownerDocument(), url)
+        val image = if (card != null) extractImage(link, card, link.ownerDocument()) else null
+        val date = extractDate(link, card ?: link, link.ownerDocument(), url)
 
         return FeedItem(
             id = (source.id + url).hashCode().toUInt().toString(16),
@@ -232,6 +227,6 @@ class G1SiteCrawler {
         const val MAX_TITLE_LENGTH = 220
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.3"
         val DATE_IN_URL = Regex("(20\\d{2}[-/]\\d{2}[-/]\\d{2})(?:[T/-](\\d{2}[-:]\\d{2}))?")
-        val DATE_PUBLISHED = Regex("\\\"datePublished\\\"\\s*:\s*\\\"([^\\\"]+)\\\"", RegexOption.IGNORE_CASE)
+        val DATE_PUBLISHED = Regex("\"datePublished\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
     }
 }
