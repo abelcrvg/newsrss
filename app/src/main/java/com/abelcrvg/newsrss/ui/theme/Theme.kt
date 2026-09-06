@@ -3,21 +3,22 @@ package com.abelcrvg.newsrss.ui.theme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
-import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import androidx.compose.material3.FloatingActionButton
 
 private val LightColors = lightColorScheme()
 private val DarkColors = darkColorScheme()
@@ -31,35 +32,40 @@ fun NewsRSSTheme(content: @Composable () -> Unit) {
     var fontFamilyName by remember { mutableStateOf(store.fontFamilyName) }
     val baseDensity = LocalDensity.current
     val density = Density(baseDensity.density, fontScale)
-    val typography = MaterialTheme.typography.copy(
-        displayLarge = MaterialTheme.typography.displayLarge.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        displayMedium = MaterialTheme.typography.displayMedium.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        displaySmall = MaterialTheme.typography.displaySmall.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        headlineLarge = MaterialTheme.typography.headlineLarge.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        headlineMedium = MaterialTheme.typography.headlineMedium.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        headlineSmall = MaterialTheme.typography.headlineSmall.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        titleLarge = MaterialTheme.typography.titleLarge.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        titleMedium = MaterialTheme.typography.titleMedium.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        titleSmall = MaterialTheme.typography.titleSmall.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        bodyLarge = MaterialTheme.typography.bodyLarge.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        bodyMedium = MaterialTheme.typography.bodyMedium.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        bodySmall = MaterialTheme.typography.bodySmall.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        labelLarge = MaterialTheme.typography.labelLarge.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        labelMedium = MaterialTheme.typography.labelMedium.copy(fontFamily = storeFontFamily(fontFamilyName)),
-        labelSmall = MaterialTheme.typography.labelSmall.copy(fontFamily = storeFontFamily(fontFamilyName))
+    val family = storeFontFamily(fontFamilyName)
+    val baseTypography = if (darkMode) MaterialTheme.typography else MaterialTheme.typography
+    val typography = baseTypography.copy(
+        displayLarge = baseTypography.displayLarge.copy(fontFamily = family),
+        displayMedium = baseTypography.displayMedium.copy(fontFamily = family),
+        displaySmall = baseTypography.displaySmall.copy(fontFamily = family),
+        headlineLarge = baseTypography.headlineLarge.copy(fontFamily = family),
+        headlineMedium = baseTypography.headlineMedium.copy(fontFamily = family),
+        headlineSmall = baseTypography.headlineSmall.copy(fontFamily = family),
+        titleLarge = baseTypography.titleLarge.copy(fontFamily = family),
+        titleMedium = baseTypography.titleMedium.copy(fontFamily = family),
+        titleSmall = baseTypography.titleSmall.copy(fontFamily = family),
+        bodyLarge = baseTypography.bodyLarge.copy(fontFamily = family),
+        bodyMedium = baseTypography.bodyMedium.copy(fontFamily = family),
+        bodySmall = baseTypography.bodySmall.copy(fontFamily = family),
+        labelLarge = baseTypography.labelLarge.copy(fontFamily = family),
+        labelMedium = baseTypography.labelMedium.copy(fontFamily = family),
+        labelSmall = baseTypography.labelSmall.copy(fontFamily = family)
     )
     androidx.compose.runtime.CompositionLocalProvider(LocalDensity provides density) {
         MaterialTheme(colorScheme = if (darkMode) DarkColors else LightColors, typography = typography) {
             Box(Modifier.fillMaxSize()) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { content() }
-                FloatingActionButton(onClick = {}, modifier = Modifier.padding(16.dp)) {
-                    NewsRSSSettingsButton(darkMode, fontScale, fontFamilyName) { dark, scale, family ->
+                FloatingActionButton(
+                    onClick = {},
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)
+                ) {
+                    NewsRSSSettingsButton(darkMode, fontScale, fontFamilyName) { dark, scale, selectedFamily ->
                         darkMode = dark
                         fontScale = scale
-                        fontFamilyName = family
+                        fontFamilyName = selectedFamily
                         store.darkMode = dark
                         store.fontScale = scale
-                        store.fontFamilyName = family
+                        store.fontFamilyName = selectedFamily
                     }
                 }
             }
