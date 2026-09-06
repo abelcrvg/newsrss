@@ -27,6 +27,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             val g1 = isG1(url)
             removeNoise(document)
             val title = firstNonBlank(document.select("meta[property=og:title]").attr("content"), document.select("meta[name=twitter:title]").attr("content"), document.select("h1").first()?.text(), document.title()) ?: error("Article title not found")
+            val subtitle = extractSubtitle(document, title)
             var blocks = if (theVerge) extractTheVergeBlocks(document, ge) else emptyList()
             var textLength = blocks.sumOf { textOf(it).length }
             val candidates = buildContentCandidates(document, theVerge, g1).sortedByDescending(::score)
@@ -38,8 +39,10 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                     textLength = candidateLength
                 }
             }
+            blocks = removeDuplicateLead(blocks, title, subtitle)
+            textLength = blocks.sumOf { textOf(it).length }
             if (textLength < MIN_CONTENT_LENGTH) {
-                val fallbackText = firstNonBlank(document.select("meta[name=description]").attr("content"), document.select("meta[property=og:description]").attr("content"), document.select("meta[name=twitter:description]").attr("content"))
+                val fallbackText = subtitle
                 if (!fallbackText.isNullOrBlank() && fallbackText.length >= MIN_FALLBACK_LENGTH) {
                     blocks = listOf(ArticleBlock.Paragraph(fallbackText))
                     textLength = fallbackText.length
@@ -48,7 +51,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             require(textLength >= MIN_CONTENT_LENGTH) { "Extracted content is too short" }
             Article(
                 id = url.hashCode().toUInt().toString(16), sourceId = URI(url).host.orEmpty(), url = url, title = title,
-                subtitle = firstNonBlank(document.select("meta[name=description]").attr("content"), document.select("meta[property=og:description]").attr("content"), document.select("meta[name=twitter:description]").attr("content")),
+                subtitle = subtitle,
                 author = extractAuthor(document), publishedAt = extractPublishedAt(document),
                 heroImageUrl = firstNonBlank(document.select("meta[property=og:image]").attr("content"), document.select("meta[name=twitter:image]").attr("content")),
                 blocks = blocks.distinct()
@@ -79,7 +82,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         val result = mutableListOf<Element>()
         selectors.forEach { selector -> document.select(selector).forEach { if (it !in result) result.add(it) } }
         if (theVerge) document.select(".duet--article--article-body-component").forEach { if (it !in result) result.add(it) }
-        document.select("div,section").asSequence().filter { it.select("p").size >= 2 && it.text().length >= 120 }.sortedByDescending(::score).take(if (g1) 30 else 12).forEach { if (it !in result) result.add(it) }
+        document.select("div,section").asSequence().filter { it.select("p").size >= 2 && it.text().length >= 120 }.sortedByDescending(::score).forEach { if (it !in result) result.add(it) }
         return result
     }
 
@@ -100,6 +103,38 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         return result.distinct()
     }
 
+    private fun extractSubtitle(document: org.jsoup.nodes.Document, title: String): String? {
+        val values = listOf(
+            document.select("meta[name=description]").attr("content"),
+            document.select("meta[property=og:description]").attr("content"),
+            document.select("meta[name=twitter:description]").attr("content")
+        ).map { it.replace(Regex("\\s+"), " ").trim() }.filter { it.isNotBlank() && !sameText(it, title) }
+        return values.firstOrNull()
+    }
+
+    private fun removeDuplicateLead(blocks: List<ArticleBlock>, title: String, subtitle: String?): List<ArticleBlock> {
+        if (subtitle.isNullOrBlank()) return blocks
+        var removed = false
+        return blocks.filter { block ->
+            if (removed || block !is ArticleBlock.Paragraph) return@filter true
+            val paragraph = block.text.text
+            if (sameText(paragraph, subtitle) || isSubtitlePrefix(paragraph, subtitle)) {
+                removed = true
+                false
+            } else true
+        }.filterNot { block -> block is ArticleBlock.Paragraph && sameText(block.text.text, title) }
+    }
+
+    private fun isSubtitlePrefix(paragraph: String, subtitle: String): Boolean {
+        val p = normalizeText(paragraph)
+        val s = normalizeText(subtitle)
+        return s.length >= 40 && p.length > s.length && p.startsWith(s) && p.substring(s.length).trim().length < 120
+    }
+
+    private fun sameText(a: String, b: String): Boolean = normalizeText(a) == normalizeText(b)
+
+    private fun normalizeText(value: String): String = value.lowercase().replace(Regex("\\s+"), " ").trim().removeSuffix(".")
+
     /** Preserve only safe inline editorial markup and color/font-weight declarations. */
     private fun sanitizeInlineHtml(element: Element): String? {
         val copy = element.clone()
@@ -117,9 +152,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             keep.forEach { attribute ->
                 if (attribute.key == "style") {
                     sanitizeStyle(attribute.value).takeIf { it.isNotBlank() }?.let { node.attr("style", it) }
-                } else {
-                    node.attr(attribute.key, attribute.value)
-                }
+                } else node.attr(attribute.key, attribute.value)
             }
         }
         val html = copy.html().trim()
