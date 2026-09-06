@@ -18,7 +18,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** Dedicated direct G1 crawler: homepage + Plantão, with article metadata enrichment. */
+/** Dedicated direct G1 crawler: homepage + Plantão, with structure-aware article discovery and metadata enrichment. */
 class G1SiteCrawler {
     suspend fun crawl(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
@@ -29,11 +29,18 @@ class G1SiteCrawler {
                 add("$base/plantao/")
                 for (page in 2..MAX_PLANTAO_PAGES) add("$base/plantao/index/feed/pagina-$page.ghtml")
             }
-            val homepageItems = extractLinks(homepage, source, baseHost)
+
+            // G1 exposes a stable feed-post structure on the home. Use it first, then
+            // fall back to all internal /noticia/ anchors so new layouts do not silently disappear.
+            val homepageItems = extractHomepage(homepage, source, baseHost)
             val plantaoItems = plantaoUrls.flatMap { url ->
                 runCatching { extractLinks(fetch(url), source, baseHost) }.getOrDefault(emptyList())
             }
-            val discovered = (homepageItems + plantaoItems).distinctBy { it.url }.take(MAX_DISCOVERED)
+
+            val discovered = (homepageItems + plantaoItems)
+                .distinctBy { it.url }
+                .take(MAX_DISCOVERED)
+
             val enriched = coroutineScope {
                 discovered.map { item -> async { enrich(item) } }.awaitAll()
             }
@@ -52,6 +59,43 @@ class G1SiteCrawler {
         .timeout(TIMEOUT)
         .followRedirects(true)
         .get()
+
+    private fun extractHomepage(document: Document, source: FeedSource, baseHost: String): List<FeedItem> {
+        val structured = document.select(
+            "a.feed-post-link[href], a[class*=feed-post-link][href], article a[href*=/noticia/], " +
+                "a[href*=/noticia/][class*=feed-post][href]"
+        ).mapNotNull { link -> extractCardItem(link, source, baseHost) }
+
+        val fallback = extractLinks(document, source, baseHost)
+        return (structured + fallback).distinctBy { it.url }
+    }
+
+    private fun extractCardItem(link: Element, source: FeedSource, baseHost: String): FeedItem? {
+        val url = link.absUrl("href").trim()
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
+        if (uri.host?.removePrefix("www.") != baseHost || !isNewsArticle(uri.path.orEmpty())) return null
+
+        val card = link.closest("article, .feed-post, [class*=feed-post], [class*=feed-item], [class*=story], [class*=card]") ?: link.parent()
+        val title = link.text().replace(Regex("\\s+"), " ").trim()
+            .takeIf { it.length in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH }
+            ?: extractTitle(link, card ?: link)
+            ?: return null
+        val summary = card?.select(".feed-post-body-resumo, [class*=resumo], p")
+            ?.map { it.text().replace(Regex("\\s+"), " ").trim() }
+            ?.firstOrNull { it.length >= 20 && it != title }
+        val image = if (card != null) extractImage(link, card, card.ownerDocument()) else null
+        val date = extractDate(link, card ?: link, card?.ownerDocument() ?: link.ownerDocument(), url)
+
+        return FeedItem(
+            id = (source.id + url).hashCode().toUInt().toString(16),
+            sourceId = source.id,
+            title = title,
+            url = url,
+            summary = summary,
+            publishedAt = date,
+            imageUrl = image
+        )
+    }
 
     private fun extractLinks(document: Document, source: FeedSource, baseHost: String): List<FeedItem> =
         document.select("a[href]").mapNotNull { link ->
@@ -80,7 +124,8 @@ class G1SiteCrawler {
             val document = fetch(item.url)
             item.copy(
                 publishedAt = extractArticlePublishedDate(document) ?: item.publishedAt,
-                imageUrl = extractArticleImage(document) ?: item.imageUrl
+                imageUrl = extractArticleImage(document) ?: item.imageUrl,
+                summary = extractArticleSummary(document) ?: item.summary
             )
         }.getOrElse { item }
     }
@@ -105,7 +150,7 @@ class G1SiteCrawler {
     private fun extractImage(link: Element, context: Element, document: Document): String? {
         val nodes = buildList {
             addAll(link.select("img, picture img, picture source, source"))
-            addAll(context.select("img, picture img, picture source, source").take(20))
+            addAll(context.select("img, picture img, picture source, source").take(30))
         }.distinct()
         nodes.asSequence().mapNotNull { imageSource(it) }
             .map { normalizeImageUrl(it, document.baseUri()) }
@@ -118,7 +163,8 @@ class G1SiteCrawler {
         val attrs = listOf("src", "data-src", "data-lazy-src", "data-original", "data-image", "data-image-url", "data-url", "data-thumb", "data-original-src", "data-lazy", "data-fallback-src")
         attrs.firstNotNullOfOrNull { image.attr(it).takeIf(String::isNotBlank) }?.let { return it }
         val srcset = image.attr("srcset").ifBlank { image.attr("data-srcset") }
-        return srcset.split(',').asSequence().map { it.trim().split(Regex("\\s+"), limit = 2).firstOrNull().orEmpty() }
+        return srcset.split(',').asSequence()
+            .map { it.trim().split(Regex("\\s+"), limit = 2).firstOrNull().orEmpty() }
             .firstOrNull { it.isNotBlank() }
     }
 
@@ -126,6 +172,10 @@ class G1SiteCrawler {
         "meta[property=og:image][content], meta[property=og:image:url][content], meta[name=twitter:image][content], meta[name=twitter:image:src][content], link[rel=image_src][href]"
     ).mapNotNull { it.attr("content").ifBlank { it.attr("href") }.takeIf(String::isNotBlank) }
         .map { normalizeImageUrl(it, document.baseUri()) }.firstOrNull { isUsableImage(it) }
+
+    private fun extractArticleSummary(document: Document): String? = document.select(
+        "meta[name=description][content], meta[property=og:description][content], meta[name=twitter:description][content]"
+    ).map { it.attr("content").trim() }.firstOrNull { it.length >= 30 }
 
     private fun isUsableImage(url: String): Boolean {
         if (!url.startsWith("http://") && !url.startsWith("https://")) return false
@@ -177,11 +227,11 @@ class G1SiteCrawler {
     private companion object {
         const val TIMEOUT = 15_000
         const val MAX_PLANTAO_PAGES = 10
-        const val MAX_DISCOVERED = 300
+        const val MAX_DISCOVERED = 500
         const val MIN_TITLE_LENGTH = 8
         const val MAX_TITLE_LENGTH = 220
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.3"
         val DATE_IN_URL = Regex("(20\\d{2}[-/]\\d{2}[-/]\\d{2})(?:[T/-](\\d{2}[-:]\\d{2}))?")
-        val DATE_PUBLISHED = Regex("\\\"datePublished\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"", RegexOption.IGNORE_CASE)
+        val DATE_PUBLISHED = Regex("\\\"datePublished\\\"\\s*:\s*\\\"([^\\\"]+)\\\"", RegexOption.IGNORE_CASE)
     }
 }
