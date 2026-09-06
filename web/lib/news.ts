@@ -1,6 +1,7 @@
 import { crawlGenericHomepage } from "./crawlers/base";
 import { crawlG1 } from "./crawlers/g1";
 import { crawlGE } from "./crawlers/ge";
+import { crawlTecmundo, crawlVoxel } from "./crawlers/tecmundo";
 import { SOURCES } from "./sources";
 import type { NewsItem } from "./types";
 
@@ -9,6 +10,8 @@ export async function crawlSource(sourceId: string): Promise<NewsItem[]> {
   if (!source) throw new Error(`Fonte desconhecida: ${sourceId}`);
   if (source.id === "ge") return crawlGE();
   if (source.id === "g1") return crawlG1();
+  if (source.id === "tecmundo") return crawlTecmundo();
+  if (source.id === "voxel") return crawlVoxel();
   return crawlGenericHomepage(source);
 }
 
