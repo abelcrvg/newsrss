@@ -24,19 +24,27 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                 .header("Accept-Language", "pt-BR,pt;q=0.9,en;q=0.8").get()
             val theVerge = isTheVerge(url)
             val ge = isGe(url)
+            val g1 = isG1(url)
             removeNoise(document)
             val title = firstNonBlank(document.select("meta[property=og:title]").attr("content"), document.select("meta[name=twitter:title]").attr("content"), document.select("h1").first()?.text(), document.title()) ?: error("Article title not found")
             var blocks = if (theVerge) extractTheVergeBlocks(document, ge) else emptyList()
             var textLength = blocks.sumOf { textOf(it).length }
-            for (candidate in buildContentCandidates(document, theVerge).sortedByDescending(::score)) {
+            val candidates = buildContentCandidates(document, theVerge, g1)
+                .sortedByDescending(::score)
+            for (candidate in candidates) {
                 val candidateBlocks = extractBlocks(candidate, if (theVerge) 1 else 8, ge)
                 val candidateLength = candidateBlocks.sumOf { textOf(it).length }
-                if (candidateLength > textLength) { blocks = candidateBlocks; textLength = candidateLength }
-                if (textLength >= MIN_CONTENT_LENGTH) break
+                if (candidateLength > textLength) {
+                    blocks = candidateBlocks
+                    textLength = candidateLength
+                }
             }
             if (textLength < MIN_CONTENT_LENGTH) {
                 val fallbackText = firstNonBlank(document.select("meta[name=description]").attr("content"), document.select("meta[property=og:description]").attr("content"), document.select("meta[name=twitter:description]").attr("content"))
-                if (!fallbackText.isNullOrBlank() && fallbackText.length >= MIN_FALLBACK_LENGTH) { blocks = listOf(ArticleBlock.Paragraph(fallbackText)); textLength = fallbackText.length }
+                if (!fallbackText.isNullOrBlank() && fallbackText.length >= MIN_FALLBACK_LENGTH) {
+                    blocks = listOf(ArticleBlock.Paragraph(fallbackText))
+                    textLength = fallbackText.length
+                }
             }
             require(textLength >= MIN_CONTENT_LENGTH) { "Extracted content is too short" }
             Article(
@@ -51,6 +59,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
 
     private fun isTheVerge(url: String): Boolean = URI(url).host.orEmpty().lowercase().removePrefix("www.") == "theverge.com"
     private fun isGe(url: String): Boolean = URI(url).host.orEmpty().lowercase().removePrefix("www.") == "ge.globo.com"
+    private fun isG1(url: String): Boolean = URI(url).host.orEmpty().lowercase().removePrefix("www.").endsWith("g1.globo.com")
 
     private fun extractTheVergeBlocks(document: org.jsoup.nodes.Document, ge: Boolean): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
@@ -63,12 +72,15 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         document.select("[hidden],[aria-hidden=true]").remove()
     }
 
-    private fun buildContentCandidates(document: org.jsoup.nodes.Document, theVerge: Boolean): List<Element> {
-        val selectors = listOf("article", "main", "[role=main]", "[itemprop=articleBody]", ".article-body", ".article-content", ".article__body", ".article__content", ".story-body", ".story-content", ".post-content", ".entry-content", ".content-body", ".materia-conteudo", ".materia-corpo", ".article__text", ".article-text", ".content", ".main-content", ".single-content", ".post-body", ".story-body-content")
+    private fun buildContentCandidates(document: org.jsoup.nodes.Document, theVerge: Boolean, g1: Boolean): List<Element> {
+        val selectors = buildList {
+            addAll(listOf("article", "main", "[role=main]", "[itemprop=articleBody]", ".article-body", ".article-content", ".article__body", ".article__content", ".story-body", ".story-content", ".post-content", ".entry-content", ".content-body", ".materia-conteudo", ".materia-corpo", ".article__text", ".article-text", ".content", ".main-content", ".single-content", ".post-body", ".story-body-content"))
+            if (g1) addAll(listOf(".materia-conteudo", ".materia-conteudo__texto", ".materia-corpo", ".materia-corpo__texto", ".article-body", ".article-content", "[data-testid*=article]", "[data-testid*=content]"))
+        }
         val result = mutableListOf<Element>()
         selectors.forEach { selector -> document.select(selector).forEach { if (it !in result) result.add(it) } }
         if (theVerge) document.select(".duet--article--article-body-component").forEach { if (it !in result) result.add(it) }
-        document.select("div,section").asSequence().filter { it.select("p").size >= 2 && it.text().length >= 80 }.sortedByDescending(::score).take(12).forEach { if (it !in result) result.add(it) }
+        document.select("div,section").asSequence().filter { it.select("p").size >= 2 && it.text().length >= 120 }.sortedByDescending(::score).take(if (g1) 30 else 12).forEach { if (it !in result) result.add(it) }
         return result
     }
 
@@ -137,9 +149,9 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun firstNonBlank(vararg values: String?): String? = values.asSequence().mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }.firstOrNull()
 
     private companion object {
-        const val MIN_CONTENT_LENGTH = 120
-        const val MIN_FALLBACK_LENGTH = 80
-        const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36 NewsRSS/0.2"
+        const val MIN_CONTENT_LENGTH = 300
+        const val MIN_FALLBACK_LENGTH = 120
+        const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36 NewsRSS/0.3"
         val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
     }
 }
