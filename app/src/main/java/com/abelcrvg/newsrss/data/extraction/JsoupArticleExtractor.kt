@@ -127,7 +127,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf { it.isNotBlank() }?.let { runCatching { Instant.parse(it) }.getOrNull() ?: runCatching { OffsetDateTime.parse(it).toInstant() }.getOrNull() ?: runCatching { ZonedDateTime.parse(it).toInstant() }.getOrNull() ?: runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull() }
 
     private fun textOf(block: ArticleBlock): String = when (block) {
-        is ArticleBlock.Paragraph -> block.text
+        is ArticleBlock.Paragraph -> block.text.text
         is ArticleBlock.Heading -> block.text
         is ArticleBlock.Quote -> block.text
         is ArticleBlock.ListBlock -> block.items.joinToString(" ")
