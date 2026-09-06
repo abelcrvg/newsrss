@@ -18,35 +18,26 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** Dedicated direct crawler for GE. Pagination stops only after consecutive pages add no new article URLs. */
+/** Dedicated direct crawler for GE. Pagination follows discovered pagination links and never uses an arbitrary article/page cap. */
 class GESiteCrawler {
     suspend fun crawl(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
             val base = source.siteUrl.trimEnd('/')
             val host = URI(base).host?.removePrefix("www.") ?: error("URL inválida")
             val documents = mutableListOf<Document>()
-            val discoveredUrls = mutableSetOf<String>()
+            val visitedPages = mutableSetOf<String>()
+            val pendingPages = ArrayDeque<String>()
+            pendingPages.add(base)
+            pendingPages.add("$base/plantao/")
 
-            val homepage = fetch(base)
-            documents += homepage
-            discoveredUrls += discoverArticleUrls(homepage, host)
-
-            var page = 1
-            var emptyPages = 0
-            while (emptyPages < EMPTY_PAGE_STOP) {
-                val url = if (page == 1) "$base/plantao/" else "$base/plantao/index/feed/pagina-$page.ghtml"
-                val document = runCatching { fetch(url) }.getOrNull()
-                if (document == null) {
-                    emptyPages++
-                } else {
-                    val newUrls = discoverArticleUrls(document, host).filterNot { it in discoveredUrls }
-                    documents += document
-                    if (newUrls.isEmpty()) emptyPages++ else {
-                        discoveredUrls += newUrls
-                        emptyPages = 0
-                    }
+            while (pendingPages.isNotEmpty()) {
+                val url = pendingPages.removeFirst()
+                if (!visitedPages.add(url)) continue
+                val document = runCatching { fetch(url) }.getOrNull() ?: continue
+                documents += document
+                discoverPaginationUrls(document, base, host).forEach { next ->
+                    if (next !in visitedPages && next !in pendingPages) pendingPages.addLast(next)
                 }
-                page++
             }
 
             val items = documents.flatMap { extractLinks(it, source, host) }
@@ -70,6 +61,21 @@ class GESiteCrawler {
         .timeout(TIMEOUT)
         .followRedirects(true)
         .get()
+
+    private fun discoverPaginationUrls(document: Document, base: String, host: String): Set<String> =
+        document.select("a[href]").asSequence().mapNotNull { link ->
+            val url = link.absUrl("href").trim().substringBefore('#')
+            if (url.isBlank()) return@mapNotNull null
+            val uri = runCatching { URI(url) }.getOrNull() ?: return@mapNotNull null
+            val path = uri.path.orEmpty().lowercase()
+            val text = link.text().trim().lowercase()
+            val paginationPath = path.startsWith("/plantao") && (
+                path.contains("/feed/") ||
+                    path.matches(Regex(".*/pagina-\\d+.*")) ||
+                    text.matches(Regex("(próxima|proxima|next|›|»|\\d+)"))
+                )
+            url.takeIf { uri.host?.removePrefix("www.") == host && paginationPath && it.startsWith(base) }
+        }.toSet()
 
     private fun discoverArticleUrls(document: Document, host: String): Set<String> =
         document.select("a[href]").asSequence().mapNotNull { link ->
@@ -116,7 +122,7 @@ class GESiteCrawler {
     }
 
     private fun extractImage(link: Element, context: Element, document: Document): String? {
-        val nodes = (link.select("img, picture img, picture source, source") + context.select("img, picture img, picture source, source").take(30)).distinct()
+        val nodes = (link.select("img, picture img, picture source, source") + context.select("img, picture img, picture source, source")).distinct()
         return nodes.asSequence().mapNotNull { imageSource(it) }.map { normalizeImageUrl(it, document.baseUri()) }.firstOrNull { isUsableImage(it) } ?: extractArticleImage(document)
     }
 
@@ -160,7 +166,6 @@ class GESiteCrawler {
 
     private companion object {
         const val TIMEOUT = 15_000
-        const val EMPTY_PAGE_STOP = 3
         const val MIN_TITLE_LENGTH = 8
         const val MAX_TITLE_LENGTH = 220
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.3"
