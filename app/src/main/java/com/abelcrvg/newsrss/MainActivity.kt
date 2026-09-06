@@ -124,9 +124,16 @@ private fun NewsRSSApp() {
         val uri = runCatching { URI(normalized) }.getOrNull()
         if (uri == null || uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) { sourceError = "Digite uma URL válida, por exemplo: https://www.uol.com.br"; return }
         val host = uri.host.removePrefix("www.")
-        val id = "custom-${host.replace(Regex("[^a-zA-Z0-9]"), "-")}"
-        if (sources.any { it.id == id }) { sourceError = "Essa fonte já está adicionada."; return }
-        persistSources(sources + FeedSource(id, host.substringBefore('.').replaceFirstChar { it.uppercase() }, normalized, category = NewsCategory.NEWS)); urlInput = ""; refresh()
+        val path = uri.path.orEmpty().trim('/').replace(Regex("[^a-zA-Z0-9]+"), "-").trim('-')
+        val baseId = "custom-" + (host + if (path.isNotBlank()) "-" + path else "").replace(Regex("[^a-zA-Z0-9]+"), "-").trim('-').lowercase(Locale.ROOT)
+        if (sources.any { it.siteUrl.equals(normalized, ignoreCase = true) }) { sourceError = "Essa fonte já está adicionada."; return }
+        val id = if (sources.none { it.id == baseId }) baseId else {
+            val suffix = normalized.hashCode().toUInt().toString(16).takeLast(8)
+            "${baseId.take(80)}-$suffix"
+        }
+        val displayName = path.substringAfterLast('-').takeIf { it.isNotBlank() }?.replaceFirstChar { it.uppercase() }
+            ?: host.substringBefore('.').replaceFirstChar { it.uppercase() }
+        persistSources(sources + FeedSource(id, displayName, normalized, category = NewsCategory.NEWS)); urlInput = ""; refresh()
     }
 
     LaunchedEffect(Unit) { refresh() }
