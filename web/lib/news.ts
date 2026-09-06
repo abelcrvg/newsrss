@@ -2,6 +2,8 @@ import { crawlGenericHomepage } from "./crawlers/base";
 import { crawlG1 } from "./crawlers/g1";
 import { crawlGE } from "./crawlers/ge";
 import { crawlTecmundo, crawlVoxel } from "./crawlers/tecmundo";
+import { crawlIGN } from "./crawlers/ign";
+import { crawlTheVerge } from "./crawlers/theverge";
 import { SOURCES } from "./sources";
 import type { NewsItem } from "./types";
 
@@ -12,6 +14,8 @@ export async function crawlSource(sourceId: string): Promise<NewsItem[]> {
   if (source.id === "g1") return crawlG1();
   if (source.id === "tecmundo") return crawlTecmundo();
   if (source.id === "voxel") return crawlVoxel();
+  if (source.id === "ign-brasil") return crawlIGN();
+  if (source.id === "the-verge") return crawlTheVerge();
   return crawlGenericHomepage(source);
 }
 
