@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import type { ArticleContent } from "../../lib/article";
 import "../styles.css";
@@ -10,7 +10,7 @@ function date(value?: string) {
   return new Date(value).toLocaleString("pt-BR", { dateStyle: "medium", timeStyle: "short" });
 }
 
-export default function ArticlePage() {
+function ArticleContentView() {
   const params = useSearchParams();
   const url = params.get("url");
   const [article, setArticle] = useState<ArticleContent | null>(null);
@@ -50,5 +50,13 @@ export default function ArticlePage() {
         <a className="original" href={url || "#"} target="_blank" rel="noreferrer">Abrir matéria original ↗</a>
       </article>
     </main>
+  );
+}
+
+export default function ArticlePage() {
+  return (
+    <Suspense fallback={<main className="reader"><a className="back" href="/">← Voltar</a><p>Carregando matéria…</p></main>}>
+      <ArticleContentView />
+    </Suspense>
   );
 }
