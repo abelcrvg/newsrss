@@ -1,0 +1,216 @@
+name: Apply polished Android layout
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  layout:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply layout
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          p = Path('app/src/main/java/com/abelcrvg/newsrss/MainActivity.kt')
+          s = p.read_text()
+          start = s.index('    Scaffold { padding ->')
+          end = s.index('\n}\n\n@Composable private fun LoadingView', start) + 2
+          replacement = '''    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text("NewsRSS", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (loading) "Atualizando notícias…" else "Seu resumo de notícias",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                actions = {
+                    TextButton(onClick = { refresh() }, enabled = !loading && !opening) { Text("Atualizar") }
+                    TextButton(onClick = { manageSources = true }) { Text("Fontes") }
+                }
+            )
+        },
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    icon = { Text("N") },
+                    label = { Text("Notícias") }
+                )
+                NavigationBarItem(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    icon = { Text("L") },
+                    label = { Text("Lidas") }
+                )
+                NavigationBarItem(
+                    selected = tab == 2,
+                    onClick = { tab = 2 },
+                    icon = { Text("★") },
+                    label = { Text("Ler depois") }
+                )
+            }
+        }
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            if (tab == 0) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column {
+                            Text(heading, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                            Text(
+                                if (loading) "As fontes estão sendo atualizadas uma por uma" else "Toque em uma notícia para abrir a leitura completa",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.secondaryContainer) {
+                            Text("${items.size}", modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    CategoryFilter(selectedCategory) { selectedCategory = it }
+                }
+            }
+            when {
+                tab == 0 && loading && items.isEmpty() -> LoadingView(sources, currentSource, completedSources, failedSources)
+                tab == 0 && error != null && items.isEmpty() -> ErrorView(error!!) { refresh() }
+                displayItems.isEmpty() -> EmptyState(tab)
+                else -> {
+                    if (error != null && tab == 0) {
+                        Text(error!!, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 16.dp))
+                    }
+                    if (tab == 0 && loading) LoadingStatus(sources, currentSource, completedSources, failedSources)
+                    if (opening) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 20.dp)
+                    ) {
+                        items(displayItems, key = { it.id }) { item ->
+                            NewsCard(item, sources, item.url in savedUrls) { openItem(item) }
+                        }
+                    }
+                }
+            }
+        }
+    }'''
+          p.write_text(s[:start] + replacement + s[end:])
+
+          p = Path('app/src/main/java/com/abelcrvg/newsrss/MainActivity.kt')
+          s = p.read_text()
+          s = s.replace(
+              '@Composable private fun LoadingView(sources: List<FeedSource>, currentSource: String?, completed: Set<String>, failed: Set<String>) { Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { CircularProgressIndicator(); LoadingStatus(sources, currentSource, completed, failed) } }',
+              '''@Composable private fun LoadingView(sources: List<FeedSource>, currentSource: String?, completed: Set<String>, failed: Set<String>) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                CircularProgressIndicator(strokeWidth = 3.dp, modifier = Modifier.size(28.dp))
+                Column { LoadingStatus(sources, currentSource, completed, failed) }
+            }
+            LinearProgressIndicator(
+                progress = { ((completed.size + failed.size).toFloat() / sources.count { it.enabled }.coerceAtLeast(1)).coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}''')
+          s = re.sub(r'@Composable private fun LoadingStatus\(.*?\n@Composable private fun ErrorView', '''@Composable private fun LoadingStatus(sources: List<FeedSource>, currentSource: String?, completed: Set<String>, failed: Set<String>) {
+    val current = sources.firstOrNull { it.id == currentSource }
+    val done = completed.size + failed.size
+    Text(if (current != null) "Varrendo ${current.name}…" else "Preparando varredura…", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    Text("$done/${sources.count { it.enabled }} fontes concluídas", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    if (completed.isNotEmpty() || failed.isNotEmpty()) {
+        Text(buildString {
+            completed.mapNotNull { id -> sources.firstOrNull { it.id == id }?.name }.takeLast(3).forEach { append("✓ $it  ") }
+            failed.mapNotNull { id -> sources.firstOrNull { it.id == id }?.name }.takeLast(2).forEach { append("✕ $it  ") }
+        }.trim(), style = MaterialTheme.typography.labelSmall)
+    }
+}
+@Composable private fun ErrorView''', s, count=1, flags=re.S)
+          s = s.replace(
+              '@Composable private fun TabButton(label: String, selected: Boolean, onClick: () -> Unit) { if (selected) Button(onClick) { Text(label) } else OutlinedButton(onClick) { Text(label) } }',
+              '''@Composable private fun TabButton(label: String, selected: Boolean, onClick: () -> Unit) {
+    if (selected) {
+        Button(onClick = onClick, contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)) { Text(label) }
+    } else {
+        OutlinedButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)) { Text(label) }
+    }
+}''')
+          s = s.replace(
+              '@Composable private fun CategoryFilter(selected: NewsCategory?, onSelected: (NewsCategory?) -> Unit) { Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { TabButton("Todos", selected == null) { onSelected(null) }; NewsCategory.entries.forEach { c -> TabButton(c.label, selected == c) { onSelected(c) } } } }',
+              '''@Composable private fun CategoryFilter(selected: NewsCategory?, onSelected: (NewsCategory?) -> Unit) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TabButton("Todos", selected == null) { onSelected(null) }
+        NewsCategory.entries.forEach { c -> TabButton(c.label, selected == c) { onSelected(c) } }
+    }
+}''')
+          s = s.replace(
+              '@Composable private fun ErrorView(message: String, onRetry: () -> Unit) { Column(Modifier.padding(20.dp)) { Text(message, color = MaterialTheme.colorScheme.error); Spacer(Modifier.height(12.dp)); Button(onClick = onRetry) { Text("Tentar novamente") } } }',
+              '''@Composable private fun ErrorView(message: String, onRetry: () -> Unit) {
+    Card(Modifier.fillMaxWidth().padding(16.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Não foi possível atualizar", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(message, color = MaterialTheme.colorScheme.error)
+            Button(onClick = onRetry) { Text("Tentar novamente") }
+        }
+    }
+}
+
+@Composable private fun EmptyState(tab: Int) {
+    Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(if (tab == 1) "Ainda não há notícias lidas" else if (tab == 2) "Sua lista está vazia" else "Nenhuma notícia encontrada", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(if (tab == 2) "Salve uma notícia para ler depois." else "Quando houver conteúdo, ele aparecerá aqui.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}''')
+          s = s.replace(
+              '@Composable private fun NewsCard(item: FeedItem, sources: List<FeedSource>, saved: Boolean, onClick: () -> Unit) {',
+              '@Composable private fun NewsCard(item: FeedItem, sources: List<FeedSource>, saved: Boolean, onClick: () -> Unit) {')
+          p.write_text(s)
+
+          theme = Path('app/src/main/java/com/abelcrvg/newsrss/ui/theme/Theme.kt')
+          t = theme.read_text()
+          t = t.replace('import androidx.compose.ui.unit.dp', 'import androidx.compose.ui.unit.dp\nimport androidx.compose.ui.graphics.Color')
+          t = t.replace('private val LightColors = lightColorScheme()\nprivate val DarkColors = darkColorScheme()', '''private val LightColors = lightColorScheme(
+    primary = Color(0xFF1565C0),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFD6E4FF),
+    onPrimaryContainer = Color(0xFF001B3E),
+    secondary = Color(0xFF4F5F78),
+    secondaryContainer = Color(0xFFD9E3F8),
+    background = Color(0xFFF7F9FC),
+    surface = Color(0xFFF7F9FC)
+)
+private val DarkColors = darkColorScheme(
+    primary = Color(0xFFA8C8FF),
+    primaryContainer = Color(0xFF004A8F),
+    secondary = Color(0xFFBCC7DD),
+    secondaryContainer = Color(0xFF3A465C)
+)''')
+          t = t.replace('val baseTypography = if (darkMode) MaterialTheme.typography else MaterialTheme.typography', 'val baseTypography = MaterialTheme.typography')
+          theme.write_text(t)
+
+          Path('.github/workflows/apply-layout.yml').unlink()
+          import subprocess
+          subprocess.run(['git','config','user.name','github-actions[bot]'], check=True)
+          subprocess.run(['git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com'], check=True)
+          subprocess.run(['git','add','app/src/main/java/com/abelcrvg/newsrss/MainActivity.kt','app/src/main/java/com/abelcrvg/newsrss/ui/theme/Theme.kt','.github/workflows/apply-layout.yml'], check=True)
+          subprocess.run(['git','commit','-m','Polish Android app layout'], check=True)
+          subprocess.run(['git','push'], check=True)
