@@ -23,3 +23,16 @@ jobs:
         run: npm install
       - name: Build web app
         run: npm run build
+      - name: Start production server
+        run: |
+          nohup npm start > /tmp/newsrss-web.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:3000/ > /dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/newsrss-web.log
+          exit 1
+      - name: Smoke test G1 API
+        run: |
+          curl -fsS --max-time 180 http://127.0.0.1:3000/api/news/g1 > /tmp/g1.json
+          node -e "const x=require('/tmp/g1.json'); if(!Array.isArray(x.items)||x.items.length===0) throw new Error('G1 sem notícias'); const bad=x.items.filter(i=>!i.title||!i.url||!/^https:\/\/g1\.globo\.com\//.test(i.url)||!i.url.includes('/noticia/')); if(bad.length) throw new Error('G1 com itens inválidos'); console.log('G1:',x.count)"
