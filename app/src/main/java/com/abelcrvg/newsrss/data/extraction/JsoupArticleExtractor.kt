@@ -29,8 +29,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             val title = firstNonBlank(document.select("meta[property=og:title]").attr("content"), document.select("meta[name=twitter:title]").attr("content"), document.select("h1").first()?.text(), document.title()) ?: error("Article title not found")
             var blocks = if (theVerge) extractTheVergeBlocks(document, ge) else emptyList()
             var textLength = blocks.sumOf { textOf(it).length }
-            val candidates = buildContentCandidates(document, theVerge, g1)
-                .sortedByDescending(::score)
+            val candidates = buildContentCandidates(document, theVerge, g1).sortedByDescending(::score)
             for (candidate in candidates) {
                 val candidateBlocks = extractBlocks(candidate, if (theVerge) 1 else 8, ge)
                 val candidateLength = candidateBlocks.sumOf { textOf(it).length }
@@ -101,18 +100,41 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         return result.distinct()
     }
 
-    /** Preserve only safe inline editorial markup. */
+    /** Preserve only safe inline editorial markup and color/font-weight declarations. */
     private fun sanitizeInlineHtml(element: Element): String? {
         val copy = element.clone()
         copy.select("script,style,iframe,svg,img,video,audio,object,embed").remove()
         copy.select("*").forEach { node ->
-            val keep = node.attributes().asList().filter { it.key in setOf("href", "title") && (node.tagName() == "a" || it.key == "title") }
+            val keep = node.attributes().asList().filter { attribute ->
+                when {
+                    attribute.key == "href" && node.tagName() == "a" -> true
+                    attribute.key == "title" -> true
+                    attribute.key == "style" -> true
+                    else -> false
+                }
+            }
             node.clearAttributes()
-            keep.forEach { node.attr(it.key, it.value) }
+            keep.forEach { attribute ->
+                if (attribute.key == "style") {
+                    sanitizeStyle(attribute.value).takeIf { it.isNotBlank() }?.let { node.attr("style", it) }
+                } else {
+                    node.attr(attribute.key, attribute.value)
+                }
+            }
         }
         val html = copy.html().trim()
         return html.takeIf { it.isNotBlank() && it != copy.text() }
     }
+
+    private fun sanitizeStyle(style: String): String = style.split(';').mapNotNull { declaration ->
+        val parts = declaration.split(':', limit = 2)
+        if (parts.size != 2) return@mapNotNull null
+        val property = parts[0].trim().lowercase()
+        val value = parts[1].trim()
+        if (property !in setOf("color", "font-weight")) return@mapNotNull null
+        if (value.isBlank() || value.length > 80 || value.contains('{') || value.contains('}') || value.contains(';')) return@mapNotNull null
+        "$property:$value"
+    }.joinToString(";")
 
     /** GE pages contain team-lineup widgets with many club badges. */
     private fun isNoiseImage(image: Element, ge: Boolean): Boolean {
