@@ -153,11 +153,11 @@ private fun NewsRSSApp() {
     Scaffold { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column { Text("NewsRSS", style = MaterialTheme.typography.headlineLarge); Text("${sources.count { it.enabled }} fontes ativas", style = MaterialTheme.typography.bodyMedium) }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton(onClick = { manageSources = true }) { Text("Fontes") }; Button(onClick = { refresh() }, enabled = !loading && !opening) { Text("Atualizar") } }
                 }
-                Spacer(Modifier.height(12.dp)); Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp)) { TabButton("Notícias", tab == 0) { tab = 0 }; TabButton("Lidas (${readItems.size})", tab == 1) { tab = 1 }; TabButton("Ler depois (${savedItems.size})", tab == 2) { tab = 2 } }
+                Spacer(Modifier.height(12.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { TabButton("Notícias", tab == 0) { tab = 0 }; TabButton("Lidas (${readItems.size})", tab == 1) { tab = 1 }; TabButton("Ler depois (${savedItems.size})", tab == 2) { tab = 2 } }
                 if (tab == 0) { Spacer(Modifier.height(10.dp)); CategoryFilter(selectedCategory) { selectedCategory = it } }
             }
             when {
@@ -180,16 +180,16 @@ private fun NewsRSSApp() {
 @Composable private fun LoadingView() { Column(Modifier.padding(20.dp)) { CircularProgressIndicator(); Spacer(Modifier.height(12.dp)); Text("Atualizando todas as fontes...") } }
 @Composable private fun ErrorView(message: String, onRetry: () -> Unit) { Column(Modifier.padding(20.dp)) { Text(message, color = MaterialTheme.colorScheme.error); Spacer(Modifier.height(12.dp)); Button(onClick = onRetry) { Text("Tentar novamente") } } }
 @Composable private fun TabButton(label: String, selected: Boolean, onClick: () -> Unit) { if (selected) Button(onClick) { Text(label) } else OutlinedButton(onClick) { Text(label) } }
-@Composable private fun CategoryFilter(selected: NewsCategory?, onSelected: (NewsCategory?) -> Unit) { Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), Arrangement.spacedBy(8.dp)) { TabButton("Todos", selected == null) { onSelected(null) }; NewsCategory.entries.forEach { c -> TabButton(c.label, selected == c) { onSelected(c) } } } }
+@Composable private fun CategoryFilter(selected: NewsCategory?, onSelected: (NewsCategory?) -> Unit) { Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { TabButton("Todos", selected == null) { onSelected(null) }; NewsCategory.entries.forEach { c -> TabButton(c.label, selected == c) { onSelected(c) } } } }
 
 @Composable
 private fun SourceManager(sources: List<FeedSource>, urlInput: String, onUrlChange: (String) -> Unit, sourceError: String?, onAdd: () -> Unit, onBack: () -> Unit, onToggle: (FeedSource) -> Unit, onCategoryChange: (FeedSource, NewsCategory) -> Unit, onDelete: (FeedSource) -> Unit) {
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-        Spacer(Modifier.height(14.dp)); Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Text("Gerenciar fontes", style = MaterialTheme.typography.headlineMedium); OutlinedButton(onClick = onBack) { Text("Voltar") } }
+        Spacer(Modifier.height(14.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("Gerenciar fontes", style = MaterialTheme.typography.headlineMedium); OutlinedButton(onClick = onBack) { Text("Voltar") } }
         Text("Ative, desative ou altere a categoria de cada fonte.", style = MaterialTheme.typography.bodyMedium); Spacer(Modifier.height(14.dp))
-        Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp)) { OutlinedTextField(urlInput, onUrlChange, Modifier.weight(1f), singleLine = true, label = { Text("Adicionar site") }); Button(onClick = onAdd) { Text("Adicionar") } }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedTextField(urlInput, onUrlChange, Modifier.weight(1f), singleLine = true, label = { Text("Adicionar site") }); Button(onClick = onAdd) { Text("Adicionar") } }
         sourceError?.let { Text(it, color = MaterialTheme.colorScheme.error) }; Spacer(Modifier.height(14.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) { items(sources, key = { it.id }) { source -> Card(Modifier.fillMaxWidth()) { Row(Modifier.fillMaxWidth().padding(14.dp), Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(source.name, style = MaterialTheme.typography.titleMedium); Text(source.siteUrl, style = MaterialTheme.typography.bodySmall); TextButton(onClick = { val i = NewsCategory.entries.indexOf(source.category); onCategoryChange(source, NewsCategory.entries[(i + 1) % NewsCategory.entries.size]) }) { Text(source.category.label) } }; Switch(source.enabled, onCheckedChange = { onToggle(source) }); if (source.id.startsWith("custom-")) TextButton(onClick = { onDelete(source) }) { Text("Excluir") } } } } }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) { items(sources, key = { it.id }) { source -> Card(Modifier.fillMaxWidth()) { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(source.name, style = MaterialTheme.typography.titleMedium); Text(source.siteUrl, style = MaterialTheme.typography.bodySmall); TextButton(onClick = { val i = NewsCategory.entries.indexOf(source.category); onCategoryChange(source, NewsCategory.entries[(i + 1) % NewsCategory.entries.size]) }) { Text(source.category.label) } }; Switch(source.enabled, onCheckedChange = { onToggle(source) }); if (source.id.startsWith("custom-")) TextButton(onClick = { onDelete(source) }) { Text("Excluir") } } } } }
     }
 }
 
@@ -204,7 +204,7 @@ private fun ReaderContent(article: Article, saved: Boolean, onBack: () -> Unit, 
     val red = MaterialTheme.colorScheme.error
     Scaffold(topBar = { TopAppBar(title = { Text("Notícia") }, navigationIcon = { TextButton(onClick = onBack) { Text("Voltar") } }, actions = { IconButton(onClick = onToggleSaved) { Text("🔖") } }) }) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 18.dp, bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-            item { Row(Modifier.fillMaxWidth(), Arrangement.End) { TextButton(onClick = onToggleSaved) { Text(if (saved) "Remover de Ler depois" else "🔖 Ler depois") } } }
+            item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = onToggleSaved) { Text(if (saved) "Remover de Ler depois" else "🔖 Ler depois") } } }
             item { Text(article.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, lineHeight = 38.sp) }
             article.subtitle?.takeIf { it.isNotBlank() }?.let { item { Text(it, style = MaterialTheme.typography.titleMedium, lineHeight = 25.sp) } }
             article.author?.takeIf { it.isNotBlank() }?.let { item { Text("Por $it", style = MaterialTheme.typography.labelLarge) } }
@@ -212,36 +212,41 @@ private fun ReaderContent(article: Article, saved: Boolean, onBack: () -> Unit, 
             if (!article.heroImageUrl.isNullOrBlank() && article.blocks.none { it is ArticleBlock.Image && it.url == article.heroImageUrl }) item { AsyncImage(article.heroImageUrl, article.title, Modifier.fillMaxWidth().heightIn(max = 300.dp), contentScale = ContentScale.FillWidth) }
             article.blocks.forEach { block -> item {
                 when (block) {
-                    is ArticleBlock.Paragraph -> Text(inlineAnnotated(block, red), style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp, lineHeight = 29.sp))
-                    is ArticleBlock.Heading -> Text(block.text, style = if (block.level <= 2) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, lineHeight = 31.sp)
-                    is ArticleBlock.Image -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) { AsyncImage(block.url, block.altText ?: block.caption, Modifier.fillMaxWidth().heightIn(max = 340.dp), contentScale = ContentScale.FillWidth); block.caption?.let { Text(it, style = MaterialTheme.typography.bodySmall) } }
-                    is ArticleBlock.Quote -> Text("“${block.text}”${block.author?.let { " — $it" } ?: ""}", style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp, lineHeight = 28.sp), fontStyle = FontStyle.Italic)
-                    is ArticleBlock.ListBlock -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { block.items.forEachIndexed { i, text -> Text(if (block.ordered) "${i + 1}. $text" else "• $text", style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp, lineHeight = 28.sp)) } }
+                    is ArticleBlock.Paragraph -> Text(if (block.inlineHtml.isNullOrBlank()) block.text else inlineAnnotated(block.inlineHtml, red), style = MaterialTheme.typography.bodyLarge, fontSize = 18.sp, lineHeight = 29.sp)
+                    is ArticleBlock.Heading -> Text(block.text, style = if (block.level <= 2) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    is ArticleBlock.Image -> Column { AsyncImage(block.url, block.altText ?: article.title, Modifier.fillMaxWidth().heightIn(max = 360.dp), contentScale = ContentScale.FillWidth); block.caption?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.labelMedium) } }
+                    is ArticleBlock.Quote -> Text("“${block.text}”${block.author?.let { " — $it" } ?: ""}", style = MaterialTheme.typography.bodyLarge, fontStyle = FontStyle.Italic, fontSize = 18.sp, lineHeight = 29.sp)
+                    is ArticleBlock.ListBlock -> Column { block.items.forEachIndexed { index, text -> Text(if (block.ordered) "${index + 1}. $text" else "• $text", style = MaterialTheme.typography.bodyLarge, fontSize = 18.sp, lineHeight = 29.sp) } }
                 }
             } }
         }
     }
 }
 
-private fun inlineAnnotated(block: ArticleBlock.Paragraph, red: Color): AnnotatedString {
-    val html = block.inlineHtml ?: return AnnotatedString(block.text)
-    val root = org.jsoup.Jsoup.parseBodyFragment(html).body()
-    return androidx.compose.ui.text.buildAnnotatedString { root.childNodes().forEach { appendInline(it, false, false, false, red) } }
+private fun inlineAnnotated(html: String, red: Color): AnnotatedString {
+    val doc = org.jsoup.Jsoup.parseBodyFragment(html)
+    return buildAnnotatedStringFromNode(doc.body(), red)
 }
 
-private fun androidx.compose.ui.text.AnnotatedString.Builder.appendInline(node: Node, bold: Boolean, italic: Boolean, red: Boolean, redColor: Color) {
-    if (node is TextNode) {
-        val style = SpanStyle(fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal, fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal, color = if (red) redColor else Color.Unspecified)
-        withStyle(style) { append(node.text()) }
-        return
+private fun buildAnnotatedStringFromNode(root: Element, red: Color): AnnotatedString = buildAnnotatedStringFromNode(root.childNodes(), red)
+
+private fun buildAnnotatedStringFromNode(nodes: List<Node>, red: Color): AnnotatedString {
+    return AnnotatedString.Builder().apply { nodes.forEach { appendInline(it, red) } }.toAnnotatedString()
+}
+
+private fun AnnotatedString.Builder.appendInline(node: Node, red: Color) {
+    when (node) {
+        is TextNode -> append(node.text())
+        is Element -> {
+            when (node.tagName().lowercase(Locale.ROOT)) {
+                "br" -> append("\n")
+                "b", "strong" -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { node.childNodes().forEach { appendInline(it, red) } }
+                "i", "em" -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { node.childNodes().forEach { appendInline(it, red) } }
+                "a", "mark" -> withStyle(SpanStyle(color = red, textDecoration = TextDecoration.Underline)) { node.childNodes().forEach { appendInline(it, red) } }
+                else -> node.childNodes().forEach { appendInline(it, red) }
+            }
+        }
     }
-    if (node !is Element) return
-    val tag = node.tagName().lowercase()
-    if (tag == "br") { append("\n"); return }
-    val nextBold = bold || tag == "b" || tag == "strong"
-    val nextItalic = italic || tag == "i" || tag == "em"
-    val nextRed = red || tag == "a" || tag == "mark"
-    node.childNodes().forEach { appendInline(it, nextBold, nextItalic, nextRed, redColor) }
 }
 
-private fun publishedLabel(value: Instant): String = value.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.getDefault()))
+private fun publishedLabel(instant: Instant): String = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale("pt", "BR")).withZone(ZoneId.systemDefault()).format(instant)
