@@ -3,7 +3,6 @@ import type { NewsItem } from "../types";
 import { absoluteUrl, cleanText, fetchHtml } from "../http";
 
 const HOME = "https://g1.globo.com/";
-const MAX_DISCOVERED = 350;
 const CONCURRENCY = 8;
 
 export async function crawlG1(): Promise<NewsItem[]> {
@@ -11,8 +10,6 @@ export async function crawlG1(): Promise<NewsItem[]> {
   const $ = cheerio.load(html);
   const found = new Map<string, NewsItem>();
 
-  // G1 homepage cards are the source of truth. We only accept real article URLs
-  // (/noticia/) so section/navigation links can never become news items.
   const selectors = [
     ".feed-post-link",
     "a.feed-post-link",
@@ -22,7 +19,6 @@ export async function crawlG1(): Promise<NewsItem[]> {
 
   for (const selector of selectors) {
     $(selector).each((_, el) => {
-      if (found.size >= MAX_DISCOVERED) return;
       const link = $(el);
       const url = absoluteUrl(link.attr("href") || "", HOME);
       if (!isG1Article(url)) return;
@@ -51,10 +47,9 @@ export async function crawlG1(): Promise<NewsItem[]> {
         });
       }
     });
-    if (found.size >= MAX_DISCOVERED) break;
   }
 
-  const candidates = Array.from(found.values()).slice(0, MAX_DISCOVERED);
+  const candidates = Array.from(found.values());
   const enriched: NewsItem[] = [];
   for (let index = 0; index < candidates.length; index += CONCURRENCY) {
     const batch = candidates.slice(index, index + CONCURRENCY);
