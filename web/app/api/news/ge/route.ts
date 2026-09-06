@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { crawlGE } from "../../../../lib/ge";
+import { crawlGE } from "../../../../lib/crawlers/ge";
 
 export const runtime = "nodejs";
 export const revalidate = 120;
