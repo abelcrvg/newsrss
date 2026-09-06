@@ -27,7 +27,9 @@ class G1SiteCrawler {
             val homepage = fetch(base)
             val plantaoUrls = buildList {
                 add("$base/plantao/")
-                for (page in 2..MAX_PLANTAO_PAGES) add("$base/plantao/index/feed/pagina-$page.ghtml")
+                for (page in 2..MAX_PLANTAO_PAGES) {
+                    add("$base/plantao/index/feed/pagina-$page.ghtml")
+                }
             }
 
             val homepageItems = extractHomepage(homepage, source, baseHost)
@@ -61,16 +63,23 @@ class G1SiteCrawler {
     private fun extractHomepage(document: Document, source: FeedSource, baseHost: String): List<FeedItem> {
         val structured = document.select(
             "a.feed-post-link[href], a[class*=feed-post-link][href], article a[href*=/noticia/], a[href*=/noticia/][class*=feed-post]"
-        ).mapNotNull { link -> extractCardItem(link, source, baseHost) }
+        ).mapNotNull { link -> extractCardItem(link, source, baseHost, document) }
         return (structured + extractLinks(document, source, baseHost)).distinctBy { it.url }
     }
 
-    private fun extractCardItem(link: Element, source: FeedSource, baseHost: String): FeedItem? {
+    private fun extractCardItem(
+        link: Element,
+        source: FeedSource,
+        baseHost: String,
+        document: Document
+    ): FeedItem? {
         val url = link.absUrl("href").trim()
         val uri = runCatching { URI(url) }.getOrNull() ?: return null
         if (uri.host?.removePrefix("www.") != baseHost || !isNewsArticle(uri.path.orEmpty())) return null
 
-        val card = link.closest("article, .feed-post, [class*=feed-post], [class*=feed-item], [class*=story], [class*=card]") ?: link.parent()
+        val card = link.closest(
+            "article, .feed-post, [class*=feed-post], [class*=feed-item], [class*=story], [class*=card]"
+        ) ?: link.parent()
         val title = link.text().replace(Regex("\\s+"), " ").trim()
             .takeIf { it.length in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH }
             ?: extractTitle(link, card ?: link)
@@ -78,8 +87,8 @@ class G1SiteCrawler {
         val summary = card?.select(".feed-post-body-resumo, [class*=resumo], p")
             ?.map { it.text().replace(Regex("\\s+"), " ").trim() }
             ?.firstOrNull { it.length >= 20 && it != title }
-        val image = if (card != null) extractImage(link, card, link.ownerDocument()) else null
-        val date = extractDate(link, card ?: link, link.ownerDocument(), url)
+        val image = if (card != null) extractImage(link, card, document) else null
+        val date = extractDate(link, card ?: link, document, url)
 
         return FeedItem(
             id = (source.id + url).hashCode().toUInt().toString(16),
@@ -96,12 +105,15 @@ class G1SiteCrawler {
         document.select("a[href]").mapNotNull { link ->
             val url = link.absUrl("href").trim()
             val uri = runCatching { URI(url) }.getOrNull() ?: return@mapNotNull null
-            if (uri.host?.removePrefix("www.") != baseHost || !isNewsArticle(uri.path.orEmpty())) return@mapNotNull null
+            if (uri.host?.removePrefix("www.") != baseHost || !isNewsArticle(uri.path.orEmpty())) {
+                return@mapNotNull null
+            }
             val context = findContentContext(link) ?: link
             val title = extractTitle(link, context) ?: return@mapNotNull null
             val image = extractImage(link, context, document)
             val date = extractDate(link, context, document, url)
-            val summary = context.select("p").map { it.text().replace(Regex("\\s+"), " ").trim() }
+            val summary = context.select("p")
+                .map { it.text().replace(Regex("\\s+"), " ").trim() }
                 .firstOrNull { it.length >= 20 && it != title }
             FeedItem(
                 id = (source.id + url).hashCode().toUInt().toString(16),
@@ -127,19 +139,27 @@ class G1SiteCrawler {
 
     private fun findContentContext(link: Element): Element? =
         link.closest("article")
-            ?: link.closest("[class*=feed-post], [class*=feed-item], [class*=card], [class*=story], [class*=headline], [class*=noticia], [class*=materia], [class*=post], [class*=content]")
+            ?: link.closest(
+                "[class*=feed-post], [class*=feed-item], [class*=card], [class*=story], [class*=headline], [class*=noticia], [class*=materia], [class*=post], [class*=content]"
+            )
             ?: link.parent()?.takeIf { it.tagName() in setOf("a", "div", "li") }
 
     private fun extractTitle(link: Element, context: Element): String? = listOf(
         link.selectFirst("h1, h2, h3, h4, h5, h6")?.text().orEmpty(),
         context.selectFirst("h1, h2, h3, h4, h5, h6")?.text().orEmpty(),
-        link.text(), link.attr("aria-label"), link.attr("title"), link.selectFirst("img")?.attr("alt").orEmpty()
-    ).asSequence().map { it.replace(Regex("\\s+"), " ").trim() }
+        link.text(),
+        link.attr("aria-label"),
+        link.attr("title"),
+        link.selectFirst("img")?.attr("alt").orEmpty()
+    ).asSequence()
+        .map { it.replace(Regex("\\s+"), " ").trim() }
         .firstOrNull { it.length in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH }
 
     private fun isNewsArticle(path: String): Boolean {
         val normalized = path.lowercase().substringBefore('?').trimEnd('/')
-        return normalized.isNotBlank() && !normalized.startsWith("/plantao") && normalized.contains("/noticia/")
+        return normalized.isNotBlank() &&
+            !normalized.startsWith("/plantao") &&
+            normalized.contains("/noticia/")
     }
 
     private fun extractImage(link: Element, context: Element, document: Document): String? {
@@ -147,7 +167,8 @@ class G1SiteCrawler {
             addAll(link.select("img, picture img, picture source, source"))
             addAll(context.select("img, picture img, picture source, source").take(30))
         }.distinct()
-        nodes.asSequence().mapNotNull { imageSource(it) }
+        nodes.asSequence()
+            .mapNotNull { imageSource(it) }
             .map { normalizeImageUrl(it, document.baseUri()) }
             .firstOrNull { isUsableImage(it) }
             ?.let { return it }
@@ -155,7 +176,11 @@ class G1SiteCrawler {
     }
 
     private fun imageSource(image: Element): String? {
-        val attrs = listOf("src", "data-src", "data-lazy-src", "data-original", "data-image", "data-image-url", "data-url", "data-thumb", "data-original-src", "data-lazy", "data-fallback-src")
+        val attrs = listOf(
+            "src", "data-src", "data-lazy-src", "data-original", "data-image",
+            "data-image-url", "data-url", "data-thumb", "data-original-src",
+            "data-lazy", "data-fallback-src"
+        )
         attrs.firstNotNullOfOrNull { image.attr(it).takeIf(String::isNotBlank) }?.let { return it }
         val srcset = image.attr("srcset").ifBlank { image.attr("data-srcset") }
         return srcset.split(',').asSequence()
@@ -165,8 +190,11 @@ class G1SiteCrawler {
 
     private fun extractArticleImage(document: Document): String? = document.select(
         "meta[property=og:image][content], meta[property=og:image:url][content], meta[name=twitter:image][content], meta[name=twitter:image:src][content], link[rel=image_src][href]"
-    ).mapNotNull { it.attr("content").ifBlank { it.attr("href") }.takeIf(String::isNotBlank) }
-        .map { normalizeImageUrl(it, document.baseUri()) }.firstOrNull { isUsableImage(it) }
+    ).mapNotNull {
+        it.attr("content").ifBlank { it.attr("href") }.takeIf(String::isNotBlank)
+    }.map {
+        normalizeImageUrl(it, document.baseUri())
+    }.firstOrNull { isUsableImage(it) }
 
     private fun extractArticleSummary(document: Document): String? = document.select(
         "meta[name=description][content], meta[property=og:description][content], meta[name=twitter:description][content]"
@@ -175,14 +203,35 @@ class G1SiteCrawler {
     private fun isUsableImage(url: String): Boolean {
         if (!url.startsWith("http://") && !url.startsWith("https://")) return false
         val value = url.lowercase()
-        return listOf("logo", "brand", "avatar", "icon", "favicon", "placeholder", "sprite", "profile", "author", "tracking", "pixel", "1x1", "transparent").none(value::contains)
+        return listOf(
+            "logo", "brand", "avatar", "icon", "favicon", "placeholder", "sprite",
+            "profile", "author", "tracking", "pixel", "1x1", "transparent"
+        ).none(value::contains)
     }
 
-    private fun extractDate(link: Element, context: Element, document: Document, url: String): Instant? {
+    private fun extractDate(
+        link: Element,
+        context: Element,
+        document: Document,
+        url: String
+    ): Instant? {
         val values = buildList {
-            addAll(link.select("time[datetime], time[content], [itemprop=datePublished], [itemprop=dateModified]").flatMap { listOf(it.attr("datetime"), it.attr("content"), it.attr("datePublished")) })
-            addAll(context.select("time[datetime], time[content], [itemprop=datePublished], [itemprop=dateModified], meta[property=article:published_time]").flatMap { listOf(it.attr("datetime"), it.attr("content"), it.attr("datePublished")) })
-            addAll(document.select("meta[property=article:published_time], meta[property=datePublished], meta[name=date]").map { it.attr("content") })
+            addAll(
+                link.select("time[datetime], time[content], [itemprop=datePublished], [itemprop=dateModified]")
+                    .flatMap {
+                        listOf(it.attr("datetime"), it.attr("content"), it.attr("datePublished"))
+                    }
+            )
+            addAll(
+                context.select("time[datetime], time[content], [itemprop=datePublished], [itemprop=dateModified], meta[property=article:published_time]")
+                    .flatMap {
+                        listOf(it.attr("datetime"), it.attr("content"), it.attr("datePublished"))
+                    }
+            )
+            addAll(
+                document.select("meta[property=article:published_time], meta[property=datePublished], meta[name=date]")
+                    .map { it.attr("content") }
+            )
         }
         values.asSequence().mapNotNull { parseDate(it) }.firstOrNull()?.let { return it }
         DATE_IN_URL.find(url)?.let { match ->
@@ -191,16 +240,21 @@ class G1SiteCrawler {
         }
         return document.select("script[type=application/ld+json]").asSequence()
             .flatMap { DATE_PUBLISHED.findAll(it.data()).asSequence() }
-            .mapNotNull { parseDate(it.groupValues[1]) }.firstOrNull()
+            .mapNotNull { parseDate(it.groupValues[1]) }
+            .firstOrNull()
     }
 
     private fun extractArticlePublishedDate(document: Document): Instant? {
-        val metadata = document.select("meta[property=article:published_time][content], meta[property=datePublished][content], meta[name=date][content], meta[itemprop=datePublished][content], time[itemprop=datePublished][datetime], time[datetime]")
-            .mapNotNull { node -> node.attr("content").ifBlank { node.attr("datetime") }.takeIf(String::isNotBlank) }
+        val metadata = document.select(
+            "meta[property=article:published_time][content], meta[property=datePublished][content], meta[name=date][content], meta[itemprop=datePublished][content], time[itemprop=datePublished][datetime], time[datetime]"
+        ).mapNotNull { node ->
+            node.attr("content").ifBlank { node.attr("datetime") }.takeIf(String::isNotBlank)
+        }
         metadata.asSequence().mapNotNull { parseDate(it) }.firstOrNull()?.let { return it }
         return document.select("script[type=application/ld+json]").asSequence()
             .flatMap { DATE_PUBLISHED.findAll(it.data()).asSequence() }
-            .mapNotNull { parseDate(it.groupValues[1]) }.firstOrNull()
+            .mapNotNull { parseDate(it.groupValues[1]) }
+            .firstOrNull()
     }
 
     private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf(String::isNotBlank)?.let {
@@ -208,8 +262,14 @@ class G1SiteCrawler {
             ?: runCatching { OffsetDateTime.parse(it).toInstant() }.getOrNull()
             ?: runCatching { ZonedDateTime.parse(it).toInstant() }.getOrNull()
             ?: runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
-            ?: runCatching { LocalDateTime.parse(it, DateTimeFormatter.ISO_LOCAL_DATE_TIME).atZone(ZoneId.systemDefault()).toInstant() }.getOrNull()
-            ?: runCatching { LocalDateTime.parse(it, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")).atZone(ZoneId.systemDefault()).toInstant() }.getOrNull()
+            ?: runCatching {
+                LocalDateTime.parse(it, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                    .atZone(ZoneId.systemDefault()).toInstant()
+            }.getOrNull()
+            ?: runCatching {
+                LocalDateTime.parse(it, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                    .atZone(ZoneId.systemDefault()).toInstant()
+            }.getOrNull()
     }
 
     private fun normalizeImageUrl(value: String, baseUri: String): String {
@@ -227,6 +287,6 @@ class G1SiteCrawler {
         const val MAX_TITLE_LENGTH = 220
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.3"
         val DATE_IN_URL = Regex("(20\\d{2}[-/]\\d{2}[-/]\\d{2})(?:[T/-](\\d{2}[-:]\\d{2}))?")
-        val DATE_PUBLISHED = Regex("\"datePublished\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+        val DATE_PUBLISHED = Regex("""[\"']datePublished[\"']\s*:\s*[\"']([^\"']+)[\"']""", RegexOption.IGNORE_CASE)
     }
 }
