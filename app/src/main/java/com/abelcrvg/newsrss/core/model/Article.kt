@@ -1,5 +1,6 @@
 package com.abelcrvg.newsrss.core.model
 
+import androidx.compose.ui.text.AnnotatedString
 import java.time.Instant
 
 /**
@@ -22,9 +23,14 @@ data class Article(
 
 sealed interface ArticleBlock {
     data class Paragraph(
-        val text: String,
+        val text: AnnotatedString,
         val inlineHtml: String? = null
-    ) : ArticleBlock
+    ) : ArticleBlock {
+        constructor(text: String, inlineHtml: String? = null) : this(
+            AnnotatedString(text),
+            inlineHtml
+        )
+    }
     data class Heading(val text: String, val level: Int = 2) : ArticleBlock
     data class Image(
         val url: String,
