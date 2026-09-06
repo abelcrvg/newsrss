@@ -1,6 +1,7 @@
 package com.abelcrvg.newsrss.data.translation
 
 import android.content.Context
+import androidx.compose.ui.text.AnnotatedString
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
 import com.google.mlkit.common.model.DownloadConditions
@@ -26,7 +27,6 @@ class OnDeviceTranslator(context: Context) {
             .build()
         val translator = Translation.getClient(options)
         return try {
-            // Download/check the model exactly once per article instead of once per text block.
             await<Unit> { continuation ->
                 translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
                     .addOnSuccessListener { continuation.resume(Unit) }
@@ -40,7 +40,9 @@ class OnDeviceTranslator(context: Context) {
                 val translatedBlocks = article.blocks.map { block ->
                     async {
                         when (block) {
-                            is ArticleBlock.Paragraph -> block.copy(text = translateText(translator, block.text))
+                            is ArticleBlock.Paragraph -> block.copy(
+                                text = AnnotatedString(translateText(translator, block.text.text))
+                            )
                             is ArticleBlock.Heading -> block.copy(text = translateText(translator, block.text))
                             is ArticleBlock.Quote -> block.copy(
                                 text = translateText(translator, block.text),
@@ -65,7 +67,6 @@ class OnDeviceTranslator(context: Context) {
                 )
             }
         } catch (_: Exception) {
-            // If the model cannot be downloaded/used, keep the original article readable.
             article
         } finally {
             translator.close()
