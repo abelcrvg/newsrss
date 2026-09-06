@@ -4,7 +4,6 @@ import { absoluteUrl, cleanText, fetchHtml } from "../http";
 
 const HOME = "https://www.theverge.com/";
 const HOST = "www.theverge.com";
-const MAX_ITEMS = 120;
 const CONCURRENCY = 8;
 const BAD_IMAGE = /(logo|avatar|author|icon|sprite|pixel|tracking|placeholder|banner)/i;
 
@@ -14,7 +13,6 @@ export async function crawlTheVerge(): Promise<NewsItem[]> {
   const found = new Map<string, NewsItem>();
 
   $("article a[href], a[href]").each((_, el) => {
-    if (found.size >= MAX_ITEMS) return;
     const link = $(el);
     const url = absoluteUrl(link.attr("href") || "", HOME);
     if (!isArticle(url)) return;
