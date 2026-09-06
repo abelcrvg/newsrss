@@ -23,8 +23,6 @@ class HomepageNewsCrawler {
             val documents = mutableListOf<Document>()
 
             if (source.id == "the-verge" || baseHost == "theverge.com") {
-                // The Verge's public RSS can be deliberately short. Scan the site itself,
-                // including its main editorial sections, so the feed is not limited to five items.
                 val base = source.siteUrl.trimEnd('/')
                 val sectionUrls = listOf(
                     base,
@@ -41,11 +39,29 @@ class HomepageNewsCrawler {
                     runCatching { fetch(url) }.onSuccess { documents += it }
                 }
             } else if (isGloboPortal(source, baseHost)) {
-                val plantaoUrls = buildList {
-                    add("${source.siteUrl.trimEnd('/')}/plantao/")
-                    for (page in 2..GLOBO_MAX_PAGES) add("${source.siteUrl.trimEnd('/')}/plantao/index/feed/pagina-$page.ghtml")
+                // GE/G1: always scan the real homepage first. The plantao archive is
+                // complementary, not a replacement for the homepage.
+                runCatching { fetch(source.siteUrl) }.onSuccess { documents += it }
+
+                // Walk the available plantao archive pages until the site stops returning
+                // new article links. There is deliberately no arbitrary item cap.
+                var page = 1
+                var emptyPages = 0
+                while (emptyPages < 2) {
+                    val url = if (page == 1) {
+                        "${source.siteUrl.trimEnd('/')}/plantao/"
+                    } else {
+                        "${source.siteUrl.trimEnd('/')}/plantao/index/feed/pagina-$page.ghtml"
+                    }
+                    val before = documents.sumOf { it.select("a[href]").size }
+                    val result = runCatching { fetch(url) }
+                    if (result.isFailure) break
+                    val document = result.getOrThrow()
+                    documents += document
+                    val after = documents.sumOf { it.select("a[href]").size }
+                    if (after == before) emptyPages++ else emptyPages = 0
+                    page++
                 }
-                plantaoUrls.forEach { url -> runCatching { fetch(url) }.onSuccess { documents += it } }
             }
 
             if (documents.isEmpty()) documents += fetch(source.siteUrl)
@@ -58,7 +74,6 @@ class HomepageNewsCrawler {
                 .map { it.maxBy { candidate -> candidate.score }.item }
                 .distinctBy { it.url }
                 .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title })
-                .take(MAX_ITEMS)
 
             if (candidates.isEmpty()) error("Nenhuma notícia foi identificada na página de ${source.name}")
             candidates
@@ -212,8 +227,6 @@ class HomepageNewsCrawler {
 
     private companion object {
         const val TIMEOUT = 20_000
-        const val MAX_ITEMS = 150
-        const val GLOBO_MAX_PAGES = 10
         const val MIN_SCORE = 3
         const val MIN_TITLE_LENGTH = 25
         const val MAX_TITLE_LENGTH = 180
