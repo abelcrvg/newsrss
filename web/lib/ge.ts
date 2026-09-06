@@ -75,7 +75,6 @@ export async function crawlGE(): Promise<NewsItem[]> {
   const $ = cheerio.load(html);
   const found = new Map<string, NewsItem>();
 
-  // GE uses editorial feed cards. Prefer those before falling back to article containers.
   $("a[href]").each((_, el) => {
     const link = $(el);
     const url = absolute(link.attr("href") || "");
@@ -88,12 +87,10 @@ export async function crawlGE(): Promise<NewsItem[]> {
     const image = pickImage($, root);
     const existing = found.get(url);
     if (!existing || (!existing.image && image)) {
-      found.set(url, { id: `ge-${Buffer.from(url).toString("base64url")}`, source: "GE", title, subtitle: subtitle && subtitle !== title ? subtitle : undefined, url, image });
+      found.set(url, { id: `ge-${Buffer.from(url).toString("base64url")}`, source: "GE", category: "football", title, subtitle: subtitle && subtitle !== title ? subtitle : undefined, url, image });
     }
   });
 
-  // Enrich each article from its own canonical metadata. This prevents game times,
-  // widget dates and unrelated timestamps on the homepage from becoming publication dates.
   const items = Array.from(found.values()).slice(0, 80);
   const enriched = await Promise.all(items.map(async item => {
     try {
