@@ -22,8 +22,13 @@ export async function crawlGE(): Promise<NewsItem[]> {
     found.set(url, { id: `ge-${Buffer.from(url).toString("base64url")}`, source: "GE", category: "football", title, subtitle: subtitle && subtitle !== title ? subtitle : undefined, url, image });
   });
 
-  const items = Array.from(found.values()).slice(0, 100);
-  const enriched = await Promise.all(items.map(enrich));
+  // Do not impose an arbitrary item limit: keep every distinct article exposed by GE's homepage.
+  const items = Array.from(found.values());
+  const enriched: NewsItem[] = [];
+  for (let index = 0; index < items.length; index += 8) {
+    const batch = items.slice(index, index + 8);
+    enriched.push(...await Promise.all(batch.map(enrich)));
+  }
   return enriched.sort((a, b) => dateValue(b.publishedAt) - dateValue(a.publishedAt));
 }
 
@@ -42,7 +47,10 @@ async function enrich(item: NewsItem): Promise<NewsItem> {
 }
 
 function isArticle(url: string) {
-  try { return new URL(url).hostname.endsWith("globo.com") && /\/futebol\/|\/esportes\/|\/noticia\//i.test(new URL(url).pathname); } catch { return false; }
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.endsWith("globo.com") && /\/noticia\//i.test(parsed.pathname);
+  } catch { return false; }
 }
 function jsonLdDate($: cheerio.CheerioAPI, key: "datePublished" | "dateModified") {
   let value: string | undefined;
