@@ -201,7 +201,7 @@ private fun NewsCard(item: FeedItem, sources: List<FeedSource>, saved: Boolean, 
 
 @Composable
 private fun ReaderContent(article: Article, saved: Boolean, onBack: () -> Unit, onToggleSaved: () -> Unit) {
-    val red = MaterialTheme.colorScheme.error
+    val highlightColor = if (article.sourceId.lowercase(Locale.ROOT).removePrefix("www.") == "ge.globo.com") Color(0xFF168A45) else MaterialTheme.colorScheme.error
     Scaffold(topBar = { TopAppBar(title = { Text("Notícia") }, navigationIcon = { TextButton(onClick = onBack) { Text("Voltar") } }, actions = { IconButton(onClick = onToggleSaved) { Text("🔖") } }) }) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 18.dp, bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = onToggleSaved) { Text(if (saved) "Remover de Ler depois" else "🔖 Ler depois") } } }
@@ -212,7 +212,7 @@ private fun ReaderContent(article: Article, saved: Boolean, onBack: () -> Unit, 
             if (!article.heroImageUrl.isNullOrBlank() && article.blocks.none { it is ArticleBlock.Image && it.url == article.heroImageUrl }) item { AsyncImage(article.heroImageUrl, article.title, Modifier.fillMaxWidth().heightIn(max = 300.dp), contentScale = ContentScale.FillWidth) }
             article.blocks.forEach { block -> item {
                 when (block) {
-                    is ArticleBlock.Paragraph -> Text(if (block.inlineHtml.isNullOrBlank()) block.text else inlineAnnotated(block.inlineHtml, red), style = MaterialTheme.typography.bodyLarge, fontSize = 18.sp, lineHeight = 29.sp)
+                    is ArticleBlock.Paragraph -> Text(if (block.inlineHtml.isNullOrBlank()) block.text else inlineAnnotated(block.inlineHtml, highlightColor), style = MaterialTheme.typography.bodyLarge, fontSize = 18.sp, lineHeight = 29.sp)
                     is ArticleBlock.Heading -> Text(block.text, style = if (block.level <= 2) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     is ArticleBlock.Image -> Column { AsyncImage(block.url, block.altText ?: article.title, Modifier.fillMaxWidth().heightIn(max = 360.dp), contentScale = ContentScale.FillWidth); block.caption?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.labelMedium) } }
                     is ArticleBlock.Quote -> Text("“${block.text}”${block.author?.let { " — $it" } ?: ""}", style = MaterialTheme.typography.bodyLarge, fontStyle = FontStyle.Italic, fontSize = 18.sp, lineHeight = 29.sp)
@@ -223,30 +223,45 @@ private fun ReaderContent(article: Article, saved: Boolean, onBack: () -> Unit, 
     }
 }
 
-private fun inlineAnnotated(html: String, red: Color): AnnotatedString {
+private fun inlineAnnotated(html: String, highlightColor: Color): AnnotatedString {
     val doc = org.jsoup.Jsoup.parseBodyFragment(html)
-    return buildAnnotatedStringFromNode(doc.body(), red)
+    return buildAnnotatedStringFromNode(doc.body(), highlightColor)
 }
 
-private fun buildAnnotatedStringFromNode(root: Element, red: Color): AnnotatedString = buildAnnotatedStringFromNode(root.childNodes(), red)
+private fun buildAnnotatedStringFromNode(root: Element, highlightColor: Color): AnnotatedString = buildAnnotatedStringFromNode(root.childNodes(), highlightColor)
 
-private fun buildAnnotatedStringFromNode(nodes: List<Node>, red: Color): AnnotatedString {
-    return AnnotatedString.Builder().apply { nodes.forEach { appendInline(it, red) } }.toAnnotatedString()
+private fun buildAnnotatedStringFromNode(nodes: List<Node>, highlightColor: Color): AnnotatedString {
+    return AnnotatedString.Builder().apply { nodes.forEach { appendInline(it, highlightColor) } }.toAnnotatedString()
 }
 
-private fun AnnotatedString.Builder.appendInline(node: Node, red: Color) {
+private fun AnnotatedString.Builder.appendInline(node: Node, highlightColor: Color) {
     when (node) {
         is TextNode -> append(node.text())
         is Element -> {
             when (node.tagName().lowercase(Locale.ROOT)) {
                 "br" -> append("\n")
-                "b", "strong" -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { node.childNodes().forEach { appendInline(it, red) } }
-                "i", "em" -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { node.childNodes().forEach { appendInline(it, red) } }
-                "a", "mark" -> withStyle(SpanStyle(color = red, textDecoration = TextDecoration.Underline)) { node.childNodes().forEach { appendInline(it, red) } }
-                else -> node.childNodes().forEach { appendInline(it, red) }
+                "b", "strong" -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { node.childNodes().forEach { appendInline(it, highlightColor) } }
+                "i", "em" -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { node.childNodes().forEach { appendInline(it, highlightColor) } }
+                "a", "mark" -> withStyle(SpanStyle(color = highlightColor, fontWeight = FontWeight.Bold, textDecoration = TextDecoration.Underline)) { node.childNodes().forEach { appendInline(it, highlightColor) } }
+                "span" -> {
+                    val style = node.attr("style").lowercase(Locale.ROOT)
+                    val color = extractCssColor(style)
+                    val bold = style.contains("font-weight:bold") || style.contains("font-weight:700") || style.contains("font-weight: 700") || color != null
+                    if (color != null || bold) {
+                        withStyle(SpanStyle(color = color ?: Color.Unspecified, fontWeight = if (bold) FontWeight.Bold else null)) { node.childNodes().forEach { appendInline(it, highlightColor) } }
+                    } else node.childNodes().forEach { appendInline(it, highlightColor) }
+                }
+                else -> node.childNodes().forEach { appendInline(it, highlightColor) }
             }
         }
     }
+}
+
+private fun extractCssColor(style: String): Color? {
+    val value = Regex("(?:^|;)\\s*color\\s*:\\s*([^;]+)").find(style)?.groupValues?.getOrNull(1)?.trim() ?: return null
+    return runCatching {
+        android.graphics.Color.parseColor(value).let { Color(it) }
+    }.getOrNull()
 }
 
 private fun publishedLabel(instant: Instant): String = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale("pt", "BR")).withZone(ZoneId.systemDefault()).format(instant)
