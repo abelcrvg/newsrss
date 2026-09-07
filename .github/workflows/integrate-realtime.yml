@@ -1,0 +1,40 @@
+name: Integrate Realtime
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  integrate:
+    if: github.actor == 'abelcrvg'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Integrate realtime UI
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/abelcrvg/newsrss/MainActivity.kt')
+          t=p.read_text()
+          t=t.replace('import com.abelcrvg.newsrss.data.source.FeedCacheStore\n', 'import com.abelcrvg.newsrss.data.source.FeedCacheStore\nimport com.abelcrvg.newsrss.data.remote.SupabaseNewsRealtime\n')
+          marker='    val scope = rememberCoroutineScope()\n'
+          effect='''    val scope = rememberCoroutineScope()\n\n    DisposableEffect(Unit) {\n        val realtime = SupabaseNewsRealtime { incoming ->\n            scope.launch {\n                cacheStore.merge(listOf(incoming))\n                items = mergeFeedItems(items, listOf(incoming))\n            }\n        }\n        realtime.start()\n        onDispose { realtime.stop() }\n    }\n'''
+          if 'SupabaseNewsRealtime' not in t: t=t.replace(marker,effect,1)
+          p.write_text(t)
+          PY
+          rm -f .github/workflows/integrate-realtime.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/abelcrvg/newsrss/MainActivity.kt .github/workflows/integrate-realtime.yml
+          git commit -m 'Connect app feed to realtime news updates'
+          git push
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "platforms;android-36"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - run: gradle :app:assembleDebug --stacktrace
