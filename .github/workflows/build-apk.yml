@@ -15,6 +15,101 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Apply final Android layout
+        if: github.event_name == 'push' && github.event.head_commit.message != 'Polish NewsRSS Android layout'
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('app/src/main/java/com/abelcrvg/newsrss/MainActivity.kt')
+          s = p.read_text()
+          start = s.index('    Scaffold { padding ->')
+          end = s.index('\n}\n\n@Composable private fun LoadingView', start) + 2
+          replacement = '''    Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("NewsRSS", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+                        Text(if (loading && currentSource != null) "Atualizando ${sources.firstOrNull { it.id == currentSource }?.name ?: "fonte"}…" else "${sources.count { it.enabled }} fontes ativas", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = { manageSources = true }) { Text("Fontes") }
+                        Button(onClick = { refresh() }, enabled = !loading && !opening) { Text("Atualizar") }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TabButton("Notícias", tab == 0) { tab = 0 }
+                    TabButton("Lidas ${readItems.size}", tab == 1) { tab = 1 }
+                    TabButton("Ler depois ${savedItems.size}", tab == 2) { tab = 2 }
+                }
+                if (tab == 0) { Spacer(Modifier.height(10.dp)); CategoryFilter(selectedCategory) { selectedCategory = it } }
+            }
+            when {
+                tab == 0 && loading && items.isEmpty() -> LoadingView(sources, currentSource, completedSources, failedSources)
+                tab == 0 && error != null && items.isEmpty() -> ErrorView(error!!) { refresh() }
+                displayItems.isEmpty() -> EmptyState(tab)
+                else -> {
+                    if (error != null && tab == 0) Text(error!!, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+                    if (tab == 0 && loading) LoadingStatus(sources, currentSource, completedSources, failedSources)
+                    if (opening) Row(Modifier.padding(horizontal = 20.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("Abrindo notícia…", style = MaterialTheme.typography.labelLarge) }
+                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 28.dp)) {
+                        item { Text(heading, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+                        items(displayItems, key = { it.id }) { item -> NewsCard(item, sources, item.url in savedUrls) { openItem(item) } }
+                    }
+                }
+            }
+        }
+    }'''
+          s = s[:start] + replacement + s[end:]
+
+          s = s.replace('@Composable private fun TabButton(label: String, selected: Boolean, onClick: () -> Unit) { if (selected) Button(onClick) { Text(label) } else OutlinedButton(onClick) { Text(label) } }', '''@Composable private fun TabButton(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(modifier = Modifier.clickable(onClick = onClick), shape = MaterialTheme.shapes.large, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, tonalElevation = if (selected) 2.dp else 0.dp) {
+        Text(label, modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp), style = MaterialTheme.typography.labelLarge)
+    }
+}''', 1)
+
+          card_start = s.find('@Composable private fun NewsCard(item: FeedItem, sources: List<FeedSource>, saved: Boolean, onClick: () -> Unit) {')
+          card_end = s.find('\n\n@Composable private fun ReaderContent', card_start)
+          if card_start < 0 or card_end < 0: raise SystemExit('NewsCard target not found')
+          card = '''@Composable private fun NewsCard(item: FeedItem, sources: List<FeedSource>, saved: Boolean, onClick: () -> Unit) {
+    val source = sources.firstOrNull { it.id == item.sourceId }
+    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick), shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
+        Column {
+            item.imageUrl?.let { AsyncImage(model = it, contentDescription = item.title, modifier = Modifier.fillMaxWidth().height(190.dp), contentScale = ContentScale.Crop) }
+            Column(Modifier.padding(16.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text(source?.name ?: "Fonte", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+                Spacer(Modifier.height(7.dp))
+                Text(item.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, lineHeight = 26.sp)
+                item.summary?.takeIf { it.isNotBlank() }?.let { Spacer(Modifier.height(7.dp)); Text(it, maxLines = 3, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 21.sp) }
+                if (saved) { Spacer(Modifier.height(9.dp)); Text("🔖 Salva para ler depois", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
+            }
+        }
+    }
+}'''
+          s = s[:card_start] + card + s[card_end:]
+
+          marker = '@Composable private fun ErrorView(message: String, onRetry: () -> Unit)'
+          if 'private fun EmptyState(tab: Int)' not in s:
+              empty = '''@Composable private fun EmptyState(tab: Int) {
+    Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(if (tab == 1) "Ainda não há notícias lidas" else if (tab == 2) "Sua lista está vazia" else "Nenhuma notícia encontrada", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(if (tab == 2) "Salve uma notícia para ler depois." else "Quando houver conteúdo, ele aparecerá aqui.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+'''
+              s = s.replace(marker, empty + marker, 1)
+          p.write_text(s)
+          PY
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -31,6 +126,15 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
+
+      - name: Commit final Android layout
+        if: github.event_name == 'push' && github.event.head_commit.message != 'Polish NewsRSS Android layout'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/abelcrvg/newsrss/MainActivity.kt
+          git commit -m 'Polish NewsRSS Android layout'
+          git push
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
