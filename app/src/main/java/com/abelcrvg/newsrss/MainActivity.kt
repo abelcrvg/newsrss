@@ -110,7 +110,10 @@ private fun NewsRSSApp() {
                 currentSource = source.id
                 val result = SmartFeedReader().read(source)
                 if (result.isSuccess) {
-                    val sourceItems = result.getOrElse { emptyList() }.map { it.copy(sourceId = source.id) }
+                    var sourceItems = result.getOrElse { emptyList() }.map { it.copy(sourceId = source.id) }
+                    if (source.id == "the-verge" && sourceItems.isNotEmpty()) {
+                        sourceItems = OnDeviceTranslator(context.applicationContext).translateFeedItems(sourceItems)
+                    }
                     val newCount = sourceItems.count { knownUrls.add(it.url) }
                     if (newCount > 0) newItemsCount += newCount
                     items = mergeFeedItems(items, sourceItems)
