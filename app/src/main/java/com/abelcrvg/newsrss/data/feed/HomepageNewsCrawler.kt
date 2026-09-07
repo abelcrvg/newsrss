@@ -205,7 +205,7 @@ class HomepageNewsCrawler {
         const val MAX_TITLE_LENGTH = 180
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.1"
         const val REFERRER = "https://www.google.com/"
-        val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\s*\\\"([^\\\"]+)\\\"")
+        val DATE_PUBLISHED_REGEX = Regex("""["]datePublished["]\s*:\s*["]([^"]+)["]""")
         val DATE_IN_URL_REGEX = Regex("(20\\d{2}[-/]\\d{2}[-/]\\d{2})(?:[T/-](\\d{2}[-:]\\d{2}))?")
     }
 }
