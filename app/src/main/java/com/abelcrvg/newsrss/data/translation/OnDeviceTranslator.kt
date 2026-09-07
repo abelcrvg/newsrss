@@ -2,6 +2,7 @@ package com.abelcrvg.newsrss.data.translation
 
 import android.content.Context
 import androidx.compose.ui.text.AnnotatedString
+import com.abelcrvg.newsrss.core.feed.FeedItem
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
 import com.google.mlkit.common.model.DownloadConditions
@@ -13,26 +14,45 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Node
+import org.jsoup.nodes.TextNode
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/** Fast on-device English -> Portuguese translation. The caller only uses this for English sources. */
+/** English -> Brazilian Portuguese translation for The Verge, entirely on-device. */
 class OnDeviceTranslator(context: Context) {
-    private val appContext = context.applicationContext
-
-    suspend fun translateArticle(article: Article): Article {
-        val options = TranslatorOptions.Builder()
+    private val translator: Translator = Translation.getClient(
+        TranslatorOptions.Builder()
             .setSourceLanguage(TranslateLanguage.ENGLISH)
             .setTargetLanguage(TranslateLanguage.PORTUGUESE)
             .build()
-        val translator = Translation.getClient(options)
-        return try {
-            await<Unit> { continuation ->
-                translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
-                    .addOnSuccessListener { continuation.resume(Unit) }
-                    .addOnFailureListener { continuation.resumeWithException(it) }
-            }
+    )
 
+    suspend fun translateFeedItems(items: List<FeedItem>): List<FeedItem> {
+        if (items.isEmpty()) return items
+        return try {
+            ensureModel()
+            coroutineScope {
+                items.map { item ->
+                    async {
+                        item.copy(
+                            title = translateText(translator, item.title),
+                            summary = item.summary?.let { translateText(translator, it) }
+                        )
+                    }
+                }.awaitAll()
+            }
+        } catch (_: Exception) {
+            items
+        } finally {
+            translator.close()
+        }
+    }
+
+    suspend fun translateArticle(article: Article): Article {
+        return try {
+            ensureModel()
             coroutineScope {
                 val title = async { translateText(translator, article.title) }
                 val subtitle = article.subtitle?.let { async { translateText(translator, it) } }
@@ -41,7 +61,8 @@ class OnDeviceTranslator(context: Context) {
                     async {
                         when (block) {
                             is ArticleBlock.Paragraph -> block.copy(
-                                text = AnnotatedString(translateText(translator, block.text.text))
+                                text = AnnotatedString(translateText(translator, block.text.text)),
+                                inlineHtml = block.inlineHtml?.let { translateInlineHtml(translator, it) }
                             )
                             is ArticleBlock.Heading -> block.copy(text = translateText(translator, block.text))
                             is ArticleBlock.Quote -> block.copy(
@@ -73,13 +94,40 @@ class OnDeviceTranslator(context: Context) {
         }
     }
 
+    private suspend fun ensureModel() {
+        await<Unit> { continuation ->
+            translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
+                .addOnSuccessListener { continuation.resume(Unit) }
+                .addOnFailureListener { continuation.resumeWithException(it) }
+        }
+    }
+
+    private suspend fun translateInlineHtml(translator: Translator, html: String): String {
+        val body = Jsoup.parseBodyFragment(html).body()
+        translateTextNodes(translator, body)
+        return body.html()
+    }
+
+    private suspend fun translateTextNodes(translator: Translator, node: Node) {
+        node.childNodes().forEach { child ->
+            when (child) {
+                is TextNode -> child.text(translateText(translator, child.text()))
+                else -> translateTextNodes(translator, child)
+            }
+        }
+    }
+
     private suspend fun translateText(translator: Translator, text: String): String {
         val clean = text.trim()
         if (clean.isBlank() || clean.length < 3) return text
         return try {
             await<String> { continuation ->
                 translator.translate(clean)
-                    .addOnSuccessListener { continuation.resume(it) }
+                    .addOnSuccessListener { translated ->
+                        val leading = text.takeWhile { it.isWhitespace() }
+                        val trailing = text.takeLastWhile { it.isWhitespace() }
+                        continuation.resume(leading + translated + trailing)
+                    }
                     .addOnFailureListener { continuation.resumeWithException(it) }
             }
         } catch (_: Exception) {
