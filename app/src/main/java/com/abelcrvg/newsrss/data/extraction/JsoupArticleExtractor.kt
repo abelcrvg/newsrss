@@ -104,32 +104,28 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         return result.distinct()
     }
 
-    /**
-     * G1 and some other publishers expose a "highlights" list followed by the
-     * same sentences in the article body. Keep the first occurrence and remove
-     * later blocks that repeat already-rendered text, including list-item text.
-     */
+    /** Remove exact and near-duplicate editorial text, notably G1 highlights repeated in the body. */
     private fun removeDuplicateContent(blocks: List<ArticleBlock>): List<ArticleBlock> {
-        val seen = mutableSetOf<String>()
+        val seen = mutableListOf<String>()
         val result = mutableListOf<ArticleBlock>()
+
+        fun rememberIfUnique(value: String): Boolean {
+            val key = duplicateKey(value)
+            if (key.isBlank()) return false
+            if (seen.any { isNearDuplicate(key, it) }) return false
+            seen += key
+            return true
+        }
+
         blocks.forEach { block ->
             when (block) {
                 is ArticleBlock.ListBlock -> {
-                    val uniqueItems = block.items.filter { item ->
-                        val key = normalizeText(item)
-                        key.isNotBlank() && seen.add(key)
-                    }
+                    val uniqueItems = block.items.filter { rememberIfUnique(it) }
                     if (uniqueItems.isNotEmpty()) result.add(block.copy(items = uniqueItems))
                 }
-                is ArticleBlock.Paragraph -> {
-                    if (seen.add(normalizeText(block.text.text))) result.add(block)
-                }
-                is ArticleBlock.Heading -> {
-                    if (seen.add(normalizeText(block.text))) result.add(block)
-                }
-                is ArticleBlock.Quote -> {
-                    if (seen.add(normalizeText(block.text))) result.add(block)
-                }
+                is ArticleBlock.Paragraph -> if (rememberIfUnique(block.text.text)) result.add(block)
+                is ArticleBlock.Heading -> if (rememberIfUnique(block.text)) result.add(block)
+                is ArticleBlock.Quote -> if (rememberIfUnique(block.text)) result.add(block)
                 is ArticleBlock.Image -> {
                     val key = "image:${block.url}"
                     if (seen.add(key)) result.add(block)
@@ -137,6 +133,21 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             }
         }
         return result
+    }
+
+    private fun duplicateKey(value: String): String = value.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+
+    private fun isNearDuplicate(a: String, b: String): Boolean {
+        if (a == b) return true
+        val shorter = minOf(a.length, b.length)
+        val longer = maxOf(a.length, b.length)
+        if (shorter < 70) return false
+        if ((a.contains(b) || b.contains(a)) && shorter.toDouble() / longer >= 0.72) return true
+        val aTokens = a.split(" ").filter { it.length >= 3 }.toSet()
+        val bTokens = b.split(" ").filter { it.length >= 3 }.toSet()
+        if (aTokens.size < 8 || bTokens.size < 8) return false
+        val intersection = aTokens.intersect(bTokens).size
+        return intersection.toDouble() / minOf(aTokens.size, bTokens.size) >= 0.88
     }
 
     private fun extractSubtitle(document: org.jsoup.nodes.Document, title: String): String? {
@@ -154,21 +165,16 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         return blocks.filter { block ->
             if (removed || block !is ArticleBlock.Paragraph) return@filter true
             val paragraph = block.text.text
-            if (sameText(paragraph, subtitle) || isSubtitlePrefix(paragraph, subtitle)) {
-                removed = true
-                false
-            } else true
+            if (sameText(paragraph, subtitle) || isSubtitlePrefix(paragraph, subtitle)) { removed = true; false } else true
         }.filterNot { block -> block is ArticleBlock.Paragraph && sameText(block.text.text, title) }
     }
 
     private fun isSubtitlePrefix(paragraph: String, subtitle: String): Boolean {
-        val p = normalizeText(paragraph)
-        val s = normalizeText(subtitle)
+        val p = normalizeText(paragraph); val s = normalizeText(subtitle)
         return s.length >= 40 && p.length > s.length && p.startsWith(s) && p.substring(s.length).trim().length < 120
     }
 
     private fun sameText(a: String, b: String): Boolean = normalizeText(a) == normalizeText(b)
-
     private fun normalizeText(value: String): String = value.lowercase().replace(Regex("\\s+"), " ").trim().removeSuffix(".")
 
     /** Preserve only safe inline editorial markup and color/font-weight declarations. */
@@ -186,9 +192,8 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             }
             node.clearAttributes()
             keep.forEach { attribute ->
-                if (attribute.key == "style") {
-                    sanitizeStyle(attribute.value).takeIf { it.isNotBlank() }?.let { node.attr("style", it) }
-                } else node.attr(attribute.key, attribute.value)
+                if (attribute.key == "style") sanitizeStyle(attribute.value).takeIf { it.isNotBlank() }?.let { node.attr("style", it) }
+                else node.attr(attribute.key, attribute.value)
             }
         }
         val html = copy.html().trim()
@@ -198,8 +203,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun sanitizeStyle(style: String): String = style.split(';').mapNotNull { declaration ->
         val parts = declaration.split(':', limit = 2)
         if (parts.size != 2) return@mapNotNull null
-        val property = parts[0].trim().lowercase()
-        val value = parts[1].trim()
+        val property = parts[0].trim().lowercase(); val value = parts[1].trim()
         if (property !in setOf("color", "font-weight")) return@mapNotNull null
         if (value.isBlank() || value.length > 80 || value.contains('{') || value.contains('}') || value.contains(';')) return@mapNotNull null
         "$property:$value"
