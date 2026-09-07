@@ -1,0 +1,36 @@
+name: Fix Homepage Regex
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor == 'abelcrvg'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fix invalid Kotlin escape
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/abelcrvg/newsrss/data/feed/HomepageNewsCrawler.kt')
+          text = p.read_text()
+          lines = text.splitlines()
+          changed = False
+          for i, line in enumerate(lines):
+              if 'val DATE_PUBLISHED_REGEX = Regex(' in line:
+                  lines[i] = '        val DATE_PUBLISHED_REGEX = Regex("""\\\"datePublished\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"""")'
+                  changed = True
+          if changed:
+              p.write_text('\\n'.join(lines) + '\\n')
+          PY
+          rm -f .github/workflows/fix-homepage-regex.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/abelcrvg/newsrss/data/feed/HomepageNewsCrawler.kt .github/workflows/fix-homepage-regex.yml
+          git diff --cached --quiet || git commit -m 'Fix Homepage crawler regex'
+          git push
