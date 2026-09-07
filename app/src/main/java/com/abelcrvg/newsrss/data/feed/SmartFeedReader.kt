@@ -5,31 +5,28 @@ import com.abelcrvg.newsrss.core.feed.FeedReader
 import com.abelcrvg.newsrss.core.model.FeedSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.net.URI
 
-/** Reads news directly from each source website instead of relying on RSS/Atom. */
+/** Reads bundled sources directly from their websites; generic crawling remains only for custom sources. */
 class SmartFeedReader(
     private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler(),
     private val g1Crawler: G1SiteCrawler = G1SiteCrawler(),
-    private val geCrawler: GESiteCrawler = GESiteCrawler()
+    private val geCrawler: GESiteCrawler = GESiteCrawler(),
+    private val uolCrawler: UolSiteCrawler = UolSiteCrawler(),
+    private val tecmundoCrawler: TecmundoSiteCrawler = TecmundoSiteCrawler(),
+    private val voxelCrawler: VoxelSiteCrawler = VoxelSiteCrawler(),
+    private val ignCrawler: IgnBrasilSiteCrawler = IgnBrasilSiteCrawler(),
+    private val theVergeCrawler: TheVergeSiteCrawler = TheVergeSiteCrawler()
 ) : FeedReader {
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
-        if (source.id == "g1") return@withContext g1Crawler.crawl(source)
-        if (source.id == "ge") return@withContext geCrawler.crawl(source)
-
-        val crawlResult = homepageCrawler.crawl(source)
-
-        if (source.id == "voxel") {
-            return@withContext crawlResult.map { items ->
-                items.filter { isVoxelArticle(it.url) }
-            }
+        when (source.id) {
+            "g1" -> g1Crawler.crawl(source)
+            "ge" -> geCrawler.crawl(source)
+            "uol" -> uolCrawler.crawl(source)
+            "tecmundo" -> tecmundoCrawler.crawl(source)
+            "voxel" -> voxelCrawler.crawl(source)
+            "ign-brasil" -> ignCrawler.crawl(source)
+            "the-verge" -> theVergeCrawler.crawl(source)
+            else -> homepageCrawler.crawl(source)
         }
-
-        crawlResult
-    }
-
-    private fun isVoxelArticle(url: String): Boolean {
-        val path = runCatching { URI(url).path.orEmpty().lowercase() }.getOrDefault("")
-        return path.startsWith("/voxel/") && path.length > "/voxel/".length
     }
 }
