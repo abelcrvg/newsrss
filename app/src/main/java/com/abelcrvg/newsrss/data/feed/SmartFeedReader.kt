@@ -7,7 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URI
 
-/** Selects the best crawler automatically from the source URL; users never configure a crawler manually. */
+/** Selects the best crawler automatically and falls back to the generic crawler when a specialized site changes. */
 class SmartFeedReader(
     private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler(),
     private val g1Crawler: G1SiteCrawler = G1SiteCrawler(),
@@ -29,10 +29,20 @@ class SmartFeedReader(
             source.id == "tecmundo" -> tecmundoCrawler.crawl(source)
             source.id == "voxel" -> voxelCrawler.crawl(source)
             source.id == "ign-brasil" -> ignCrawler.crawl(source)
-            source.id == "the-verge" || host == "theverge.com" -> theVergeCrawler.crawl(source)
-            host == "skysports.com" -> skySportsCrawler.crawl(source)
-            host == "espn.com.br" || host.endsWith(".espn.com.br") -> espnCrawler.crawl(source)
+            source.id == "the-verge" || host == "theverge.com" -> fallbackToGeneric(theVergeCrawler.crawl(source), source)
+            host == "skysports.com" || host.endsWith(".skysports.com") -> fallbackToGeneric(skySportsCrawler.crawl(source), source)
+            host == "espn.com.br" || host.endsWith(".espn.com.br") -> fallbackToGeneric(espnCrawler.crawl(source), source)
             else -> homepageCrawler.crawl(source)
         }
+    }
+
+    private suspend fun fallbackToGeneric(
+        specialized: Result<List<FeedItem>>,
+        source: FeedSource
+    ): Result<List<FeedItem>> {
+        if (specialized.isSuccess && specialized.getOrNull().orEmpty().isNotEmpty()) return specialized
+        val generic = homepageCrawler.crawl(source)
+        if (generic.isSuccess && generic.getOrNull().orEmpty().isNotEmpty()) return generic
+        return specialized
     }
 }
