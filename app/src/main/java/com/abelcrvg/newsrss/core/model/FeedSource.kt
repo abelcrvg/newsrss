@@ -2,34 +2,56 @@ package com.abelcrvg.newsrss.core.model
 
 import java.net.URI
 
-/** A user-configured news source. Topic is inferred automatically when the generic News category is used. */
 data class FeedSource(
     val id: String,
     val name: String,
     val siteUrl: String,
     val feedUrl: String? = null,
     var category: NewsCategory = NewsCategory.NEWS,
+    var language: SourceLanguage = SourceLanguage.AUTO,
     val enabled: Boolean = true
 ) {
     init {
-        if (category == NewsCategory.NEWS) {
-            category = inferSourceCategory(siteUrl)
-        }
+        val inferred = SourceAnalyzer.infer(siteUrl)
+        if (category == NewsCategory.NEWS) category = inferred.category
+        if (language == SourceLanguage.AUTO) language = inferred.language
     }
 }
 
-fun inferSourceCategory(siteUrl: String): NewsCategory {
-    val uri = runCatching { URI(siteUrl) }.getOrNull() ?: return NewsCategory.NEWS
-    val host = uri.host.orEmpty().removePrefix("www.").lowercase()
-    val path = uri.path.orEmpty().lowercase()
-    return when {
-        host == "skysports.com" || host.endsWith(".skysports.com") -> NewsCategory.FOOTBALL
-        path.contains("/football") || path.contains("/soccer") -> NewsCategory.FOOTBALL
-        path.contains("/games") || path.contains("/gaming") -> NewsCategory.GAMES
-        path.contains("/tech") || path.contains("/technology") -> NewsCategory.TECHNOLOGY
-        path.contains("/science") -> NewsCategory.SCIENCE
-        path.contains("/economy") || path.contains("/business") || path.contains("/finance") -> NewsCategory.ECONOMY
-        path.contains("/movies") || path.contains("/cinema") || path.contains("/tv") -> NewsCategory.MOVIES
-        else -> NewsCategory.NEWS
+data class SourceAnalysis(
+    val category: NewsCategory,
+    val language: SourceLanguage
+)
+
+object SourceAnalyzer {
+    fun infer(siteUrl: String): SourceAnalysis {
+        val uri = runCatching { URI(siteUrl) }.getOrNull()
+            ?: return SourceAnalysis(NewsCategory.NEWS, SourceLanguage.AUTO)
+        val host = uri.host.orEmpty().removePrefix("www.").lowercase()
+        val path = uri.path.orEmpty().lowercase()
+        val text = "$host $path"
+
+        val category = when {
+            listOf("football", "futebol", "soccer", "premier-league", "brasileirao").any(text::contains) -> NewsCategory.FOOTBALL
+            listOf("games", "gaming", "jogos", "voxel").any(text::contains) -> NewsCategory.GAMES
+            listOf("tech", "technology", "tecnologia").any(text::contains) -> NewsCategory.TECHNOLOGY
+            listOf("science", "ciencia", "ciência").any(text::contains) -> NewsCategory.SCIENCE
+            listOf("economy", "economia", "business", "finance").any(text::contains) -> NewsCategory.ECONOMY
+            listOf("movies", "movie", "cinema", "filmes", "series", "tv").any(text::contains) -> NewsCategory.MOVIES
+            listOf("world", "mundo", "international", "internacional").any(text::contains) -> NewsCategory.WORLD
+            host == "theverge.com" || host.endsWith(".theverge.com") -> NewsCategory.TECHNOLOGY
+            else -> NewsCategory.NEWS
+        }
+
+        val language = when {
+            host == "skysports.com" || host.endsWith(".skysports.com") -> SourceLanguage.ENGLISH
+            host == "theverge.com" || host.endsWith(".theverge.com") -> SourceLanguage.ENGLISH
+            host == "espn.com.br" || host.endsWith(".com.br") -> SourceLanguage.PORTUGUESE
+            host.endsWith(".br") -> SourceLanguage.PORTUGUESE
+            else -> SourceLanguage.AUTO
+        }
+        return SourceAnalysis(category, language)
     }
 }
+
+fun inferSourceCategory(siteUrl: String): NewsCategory = SourceAnalyzer.infer(siteUrl).category
