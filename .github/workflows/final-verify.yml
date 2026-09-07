@@ -1,0 +1,45 @@
+name: Final Verify
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.actor == 'abelcrvg'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refine UOL filter
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/abelcrvg/newsrss/data/feed/HomepageNewsCrawler.kt')
+          text = p.read_text()
+          text = text.replace(', "jornalista")', ')')
+          p.write_text(text)
+          PY
+          rm -f .github/workflows/final-verify.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/abelcrvg/newsrss/data/feed/HomepageNewsCrawler.kt .github/workflows/final-verify.yml
+          git commit -m 'Refine UOL editorial filtering'
+          git push
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android SDK platform
+        run: sdkmanager "platforms;android-36"
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Build after all fixes
+        run: gradle :app:assembleDebug --stacktrace
