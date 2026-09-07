@@ -7,7 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URI
 
-/** Reads bundled sources directly from their websites; generic crawling remains only for custom sources. */
+/** Selects the best crawler automatically from the source URL; users never configure a crawler manually. */
 class SmartFeedReader(
     private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler(),
     private val g1Crawler: G1SiteCrawler = G1SiteCrawler(),
@@ -17,7 +17,8 @@ class SmartFeedReader(
     private val voxelCrawler: VoxelSiteCrawler = VoxelSiteCrawler(),
     private val ignCrawler: IgnBrasilSiteCrawler = IgnBrasilSiteCrawler(),
     private val theVergeCrawler: TheVergeSiteCrawler = TheVergeSiteCrawler(),
-    private val skySportsCrawler: SkySportsSiteCrawler = SkySportsSiteCrawler()
+    private val skySportsCrawler: SkySportsSiteCrawler = SkySportsSiteCrawler(),
+    private val espnCrawler: EspnSiteCrawler = EspnSiteCrawler()
 ) : FeedReader {
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         val host = runCatching { URI(source.siteUrl).host.orEmpty().removePrefix("www.").lowercase() }.getOrDefault("")
@@ -28,8 +29,9 @@ class SmartFeedReader(
             source.id == "tecmundo" -> tecmundoCrawler.crawl(source)
             source.id == "voxel" -> voxelCrawler.crawl(source)
             source.id == "ign-brasil" -> ignCrawler.crawl(source)
-            source.id == "the-verge" -> theVergeCrawler.crawl(source)
+            source.id == "the-verge" || host == "theverge.com" -> theVergeCrawler.crawl(source)
             host == "skysports.com" -> skySportsCrawler.crawl(source)
+            host == "espn.com.br" || host.endsWith(".espn.com.br") -> espnCrawler.crawl(source)
             else -> homepageCrawler.crawl(source)
         }
     }
