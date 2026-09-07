@@ -13,7 +13,7 @@ import java.time.OffsetDateTime
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** Generic reader-mode extractor with G1/GE-aware fallbacks and JSON-LD recovery. */
+/** Generic reader-mode extractor with source-specific boundaries and JSON-LD recovery. */
 class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleExtractor {
     override suspend fun extract(url: String): Result<Article> = withContext(Dispatchers.IO) {
         runCatching {
@@ -26,13 +26,22 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             removeNoise(document)
             val title = firstNonBlank(document.select("meta[property=og:title]").attr("content"), document.select("meta[name=twitter:title]").attr("content"), document.select("h1").first()?.text(), document.title()) ?: error("Article title not found")
             val subtitle = extractSubtitle(document, title)
-            var blocks = if (theVerge) extractTheVergeBlocks(document, ge) else emptyList()
-            var textLength = blocks.sumOf { textOf(it).length }
-            buildContentCandidates(document, theVerge, g1).sortedByDescending(::score).forEach { candidate ->
-                val candidateBlocks = extractBlocks(candidate, if (theVerge) 1 else 3, ge)
-                val candidateLength = candidateBlocks.sumOf { textOf(it).length }
-                if (candidateLength > textLength) { blocks = candidateBlocks; textLength = candidateLength }
+
+            var blocks: List<ArticleBlock>
+            if (theVerge) {
+                // The Verge has a known article-body component. Do not run the generic
+                // candidate scorer here: <main>, <article> and generic divs also contain
+                // recommendation cards, promos and unrelated images.
+                blocks = extractTheVergeBlocks(document)
+            } else {
+                blocks = buildContentCandidates(document, false, g1).sortedByDescending(::score)
+                    .fold(emptyList()) { best, candidate ->
+                        val candidateBlocks = extractBlocks(candidate, 3, ge)
+                        if (candidateBlocks.sumOf { textOf(it).length } > best.sumOf { textOf(it).length }) candidateBlocks else best
+                    }
             }
+
+            var textLength = blocks.sumOf { textOf(it).length }
             if (textLength < MIN_CONTENT_LENGTH) {
                 val jsonBlocks = extractJsonLdArticleBody(document, ge)
                 val jsonLength = jsonBlocks.sumOf { textOf(it).length }
@@ -58,8 +67,50 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun isGe(url: String) = URI(url).host.orEmpty().lowercase().removePrefix("www.") == "ge.globo.com"
     private fun isG1(url: String) = URI(url).host.orEmpty().lowercase().removePrefix("www.").endsWith("g1.globo.com")
 
-    private fun extractTheVergeBlocks(document: org.jsoup.nodes.Document, ge: Boolean): List<ArticleBlock> = buildList {
-        document.select(".duet--article--article-body-component").forEach { component -> extractBlocks(component, 1, ge).forEach { if (it !in this) add(it) } }
+    /** Extract only The Verge's article-body components; never fall back to page-wide divs. */
+    private fun extractTheVergeBlocks(document: org.jsoup.nodes.Document): List<ArticleBlock> = buildList {
+        document.select(".duet--article--article-body-component").forEach { component ->
+            extractTheVergeComponent(component).forEach { block -> if (block !in this) add(block) }
+        }
+    }
+
+    /**
+     * A body component may contain a paragraph, heading, quote, list or figure.
+     * Images are accepted only from figures/pictures that live inside the component,
+     * preventing recommendation, author, social and decorative images from leaking in.
+     */
+    private fun extractTheVergeComponent(component: Element): List<ArticleBlock> {
+        val result = mutableListOf<ArticleBlock>()
+        component.select("p,h2,h3,h4,blockquote,ul,ol,figure").forEach { element ->
+            when (element.tagName()) {
+                "p" -> element.text().trim().takeIf { it.length >= 1 }?.let { result.add(ArticleBlock.Paragraph(it, sanitizeInlineHtml(element))) }
+                "h2","h3","h4" -> element.text().trim().takeIf(String::isNotBlank)?.let { result.add(ArticleBlock.Heading(it, element.tagName().drop(1).toInt())) }
+                "blockquote" -> element.text().trim().takeIf(String::isNotBlank)?.let { result.add(ArticleBlock.Quote(it)) }
+                "ul","ol" -> {
+                    val items = element.children().filter { it.tagName() == "li" }.map { it.text().trim() }.filter(String::isNotBlank)
+                    if (items.isNotEmpty()) result.add(ArticleBlock.ListBlock(items, element.tagName() == "ol"))
+                }
+                "figure" -> {
+                    val image = element.selectFirst("img")
+                    if (image != null && isTheVergeContentFigure(element)) {
+                        addImage(result, image, element.selectFirst("figcaption")?.text())
+                    }
+                }
+            }
+        }
+        return result.distinct()
+    }
+
+    private fun isTheVergeContentFigure(figure: Element): Boolean {
+        val classes = buildString {
+            append(figure.className()).append(' ').append(figure.id()).append(' ')
+            figure.parents().take(4).forEach { append(it.className()).append(' ').append(it.id()).append(' ') }
+        }.lowercase()
+        val noise = listOf(
+            "related", "recommend", "newsletter", "promo", "advert", "ad-", "social", "share",
+            "author", "avatar", "logo", "header", "footer", "sidebar", "commerce", "product-card"
+        )
+        return noise.none(classes::contains)
     }
 
     private fun removeNoise(document: org.jsoup.nodes.Document) {
@@ -102,7 +153,6 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         return result.distinct()
     }
 
-    /** JSON-LD is the recovery path when G1 serves the article body in a structure the DOM selectors miss. */
     private fun extractJsonLdArticleBody(document: org.jsoup.nodes.Document, ge: Boolean): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
         document.select("script[type=application/ld+json]").forEach { script ->
