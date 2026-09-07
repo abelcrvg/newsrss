@@ -6,6 +6,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -25,19 +27,32 @@ class G1SiteCrawler {
             val base = source.siteUrl.trimEnd('/')
             val baseHost = URI(base).host?.removePrefix("www.") ?: error("URL inválida")
             val homepage = fetch(base)
-            val plantaoUrls = buildList {
-                add("$base/plantao/")
-                for (page in 2..MAX_PLANTAO_PAGES) add("$base/plantao/index/feed/pagina-$page.ghtml")
-            }
-
             val homepageItems = extractHomepage(homepage, source, baseHost)
-            val plantaoItems = plantaoUrls.flatMap { url ->
-                runCatching { extractLinks(fetch(url), source, baseHost) }.getOrDefault(emptyList())
-            }
-            val discovered = (homepageItems + plantaoItems).distinctBy { it.url }
 
+            // The archive is walked until it stops yielding new links. There is no fixed
+            // page/item cap, but article enrichment is deliberately bounded to avoid
+            // opening hundreds of connections at once and freezing/crashing the phone.
+            val plantaoItems = mutableListOf<FeedItem>()
+            var page = 1
+            var emptyPages = 0
+            val seenPageUrls = mutableSetOf<String>()
+            while (emptyPages < 2) {
+                val url = if (page == 1) "$base/plantao/" else "$base/plantao/index/feed/pagina-$page.ghtml"
+                if (!seenPageUrls.add(url)) break
+                val result = runCatching { extractLinks(fetch(url), source, baseHost) }
+                if (result.isFailure) break
+                val found = result.getOrDefault(emptyList())
+                if (found.isEmpty()) emptyPages++ else emptyPages = 0
+                plantaoItems += found
+                page++
+            }
+
+            val discovered = (homepageItems + plantaoItems).distinctBy { it.url }
+            val enrichmentSemaphore = Semaphore(ENRICH_CONCURRENCY)
             coroutineScope {
-                discovered.map { item -> async { enrich(item) } }.awaitAll()
+                discovered.map { item ->
+                    async(Dispatchers.IO) { enrichmentSemaphore.withPermit { enrich(item) } }
+                }.awaitAll()
             }.distinctBy { it.url }.sortedWith(
                 compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }
                     .thenBy { it.title.lowercase() }
@@ -120,14 +135,12 @@ class G1SiteCrawler {
     /** Only inspect the actual card. Never fall back to the homepage og:image, which is the G1 logo. */
     private fun extractCardImage(card: Element): String? {
         val candidates = card.select("img, picture img, picture source, source").asSequence()
-            .flatMap { image ->
-                sequenceOf(
-                    image.attr("src"), image.attr("data-src"), image.attr("data-lazy-src"), image.attr("data-original"),
-                    image.attr("data-image"), image.attr("data-image-url"), image.attr("data-url"), image.attr("data-thumb"),
-                    image.attr("data-original-src"), image.attr("data-lazy"), image.attr("data-fallback-src"),
-                    image.attr("srcset"), image.attr("data-srcset")
-                )
-            }
+            .flatMap { image -> sequenceOf(
+                image.attr("src"), image.attr("data-src"), image.attr("data-lazy-src"), image.attr("data-original"),
+                image.attr("data-image"), image.attr("data-image-url"), image.attr("data-url"), image.attr("data-thumb"),
+                image.attr("data-original-src"), image.attr("data-lazy"), image.attr("data-fallback-src"),
+                image.attr("srcset"), image.attr("data-srcset")
+            ) }
             .flatMap { value -> value.split(',').asSequence().map { it.trim().split(Regex("\\s+"), limit = 2).firstOrNull().orEmpty() } }
             .mapNotNull { normalizeImageUrl(it, card.baseUri()).takeIf(String::isNotBlank) }
             .firstOrNull(::isUsableImage)
@@ -185,7 +198,7 @@ class G1SiteCrawler {
 
     private companion object {
         const val TIMEOUT = 15_000
-        const val MAX_PLANTAO_PAGES = 10
+        const val ENRICH_CONCURRENCY = 6
         const val MIN_TITLE_LENGTH = 8
         const val MAX_TITLE_LENGTH = 220
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.3"
