@@ -2,19 +2,13 @@ package com.abelcrvg.newsrss.data.feed
 
 import com.abelcrvg.newsrss.core.feed.FeedItem
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
-import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
 import java.time.Instant
 
-/** Source-specific direct HTML crawler engine. No RSS and no artificial article-count limit. */
+/** Source-specific direct HTML crawler engine. It reads card metadata only; article pages are fetched when opened. */
 class DirectSiteCrawler(private val config: Config) {
     data class Config(
         val sourceId: String,
@@ -47,15 +41,13 @@ class DirectSiteCrawler(private val config: Config) {
                 val old = found[url]
                 if (old == null || (old.imageUrl == null && item.imageUrl != null)) found[url] = item
             }
-            val semaphore = Semaphore(ENRICH_CONCURRENCY)
-            coroutineScope {
-                found.values.map { item -> async(Dispatchers.IO) { semaphore.withPermit { enrich(item) } } }.awaitAll()
-            }.distinctBy { it.url }
+            found.values
+                .distinctBy { it.url }
                 .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title.lowercase() })
         }
     }
 
-    private fun fetch(url: String): Document = Jsoup.connect(url)
+    private fun fetch(url: String) = Jsoup.connect(url)
         .userAgent(USER_AGENT)
         .referrer("https://www.google.com/")
         .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
@@ -80,26 +72,18 @@ class DirectSiteCrawler(private val config: Config) {
     ).mapNotNull(::clean).firstOrNull { it.length in MIN_TITLE..MAX_TITLE }
 
     private fun summaryOf(context: Element, title: String): String? = context.select("p,[class*=summary],[class*=subtitle],[class*=description],[class*=resumo],[class*=subtitulo]")
-        .mapNotNull { clean(it.text()) }.firstOrNull { it.length >= 30 && !it.equals(title, true) }
+        .mapNotNull { clean(it.text()) }
+        .firstOrNull { it.length >= 30 && !it.equals(title, true) }
 
-    /** Handles normal, lazy-loaded, responsive and noscript images used by modern UOL cards. */
     private fun imageOf(context: Element, base: String): String? {
         val candidates = context.select("img,source,noscript")
             .asSequence()
             .flatMap { node ->
                 sequenceOf(
-                    node.attr("src"),
-                    node.attr("data-src"),
-                    node.attr("data-lazy-src"),
-                    node.attr("data-original"),
-                    node.attr("data-image"),
-                    node.attr("data-image-url"),
-                    node.attr("data-lazy"),
-                    node.attr("data-url"),
-                    node.attr("srcset"),
-                    node.attr("data-srcset"),
-                    node.attr("data-original-srcset"),
-                    node.attr("data-lazy-srcset"),
+                    node.attr("src"), node.attr("data-src"), node.attr("data-lazy-src"),
+                    node.attr("data-original"), node.attr("data-image"), node.attr("data-image-url"),
+                    node.attr("data-lazy"), node.attr("data-url"), node.attr("srcset"),
+                    node.attr("data-srcset"), node.attr("data-original-srcset"), node.attr("data-lazy-srcset"),
                     node.attr("content")
                 ) + sequenceOf(node.attr("style")).flatMap(::extractCssImages)
             }
@@ -107,7 +91,6 @@ class DirectSiteCrawler(private val config: Config) {
             .mapNotNull { absolute(it, base) }
             .filter(::usableImage)
             .toList()
-
         return candidates.firstOrNull()
     }
 
@@ -119,7 +102,7 @@ class DirectSiteCrawler(private val config: Config) {
         if (cleanValue.isBlank()) return emptySequence()
         if (cleanValue.contains(",") && (cleanValue.contains(" ") || cleanValue.contains("w") || cleanValue.contains("x"))) {
             return cleanValue.split(',').asSequence()
-                .map { part -> part.trim().split(Regex("\\s+")).firstOrNull().orEmpty() }
+                .map { it.trim().split(Regex("\\s+")).firstOrNull().orEmpty() }
                 .filter(String::isNotBlank)
                 .toList()
                 .asReversed()
@@ -128,34 +111,12 @@ class DirectSiteCrawler(private val config: Config) {
         return sequenceOf(cleanValue)
     }
 
-    private fun dateOf(link: Element, context: Element): Instant? = (link.select("time[datetime],time[content],[itemprop=datePublished]") + context.select("time[datetime],time[content],[itemprop=datePublished]"))
-        .asSequence().flatMap { sequenceOf(it.attr("datetime"), it.attr("content"), it.attr("datePublished")) }.mapNotNull(::parseDate).firstOrNull()
-
-    private suspend fun enrich(item: FeedItem): FeedItem = withContext(Dispatchers.IO) {
-        runCatching {
-            val doc = fetch(item.url)
-            val image = sequenceOf(
-                doc.select("meta[property=og:image][content],meta[name=twitter:image][content],meta[itemprop=image][content]").firstOrNull()?.attr("content"),
-                doc.select("article img,main img,[itemprop=image] img").asSequence().flatMap { imageElement ->
-                    sequenceOf(imageElement.attr("src"), imageElement.attr("data-src"), imageElement.attr("data-lazy-src"), imageElement.attr("data-original"), imageElement.attr("srcset"), imageElement.attr("data-srcset"))
-                }.flatMap(::expandImageCandidates).firstOrNull()
-            ).mapNotNull { clean(it) }.mapNotNull { absolute(it, item.url) }.firstOrNull(::usableImage)
-
-            item.copy(
-                title = clean(doc.select("meta[property=og:title][content],meta[name=twitter:title][content]").firstOrNull()?.attr("content")) ?: item.title,
-                summary = clean(doc.select("meta[property=og:description][content],meta[name=description][content],meta[name=twitter:description][content]").firstOrNull()?.attr("content")) ?: item.summary,
-                publishedAt = metadataDate(doc) ?: item.publishedAt,
-                imageUrl = image ?: item.imageUrl
-            )
-        }.getOrElse { item }
-    }
-
-    private fun metadataDate(doc: Document): Instant? {
-        val metadata = doc.select("meta[property=article:published_time][content],meta[property=datePublished][content],meta[name=datePublished][content],meta[itemprop=datePublished][content],time[itemprop=datePublished][datetime],time[datetime]")
-            .mapNotNull { it.attr("content").ifBlank { it.attr("datetime") }.takeIf(String::isNotBlank) }
-        metadata.asSequence().mapNotNull(::parseDate).firstOrNull()?.let { return it }
-        return doc.select("script[type=application/ld+json]").asSequence().flatMap { DATE_PUBLISHED.findAll(it.data()).asSequence() }.mapNotNull { parseDate(it.groupValues[1]) }.firstOrNull()
-    }
+    private fun dateOf(link: Element, context: Element): Instant? =
+        (link.select("time[datetime],time[content],[itemprop=datePublished]") + context.select("time[datetime],time[content],[itemprop=datePublished]"))
+            .asSequence()
+            .flatMap { sequenceOf(it.attr("datetime"), it.attr("content"), it.attr("datePublished")) }
+            .mapNotNull(::parseDate)
+            .firstOrNull()
 
     private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf(String::isNotBlank)?.let {
         runCatching { Instant.parse(it) }.getOrNull()
@@ -167,18 +128,21 @@ class DirectSiteCrawler(private val config: Config) {
 
     private fun clean(value: String?): String? = value?.replace(Regex("\\s+"), " ")?.trim()?.takeIf { it.isNotBlank() }
 
-    private fun absolute(value: String, base: String): String? = if (value.isBlank()) null else runCatching { URI(base).resolve(value.trim()).toString() }.getOrNull()?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+    private fun absolute(value: String, base: String): String? = if (value.isBlank()) null else
+        runCatching { URI(base).resolve(value.trim()).toString() }.getOrNull()
+            ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
 
-    private fun usableImage(url: String): Boolean = listOf("logo", "avatar", "author", "icon", "sprite", "pixel", "tracking", "placeholder", "banner", "favicon", "1x1", "transparent", "data:image").none(url.lowercase()::contains)
+    private fun usableImage(url: String): Boolean = listOf(
+        "logo", "avatar", "author", "icon", "sprite", "pixel", "tracking", "placeholder",
+        "banner", "favicon", "1x1", "transparent", "data:image"
+    ).none(url.lowercase()::contains)
 
     private fun stableId(source: String, url: String) = (source + url).hashCode().toUInt().toString(16)
 
     companion object {
-        private const val TIMEOUT = 15_000
-        private const val ENRICH_CONCURRENCY = 6
+        private const val TIMEOUT = 12_000
         private const val MIN_TITLE = 12
         private const val MAX_TITLE = 240
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.3"
-        private val DATE_PUBLISHED = Regex("""[\"']datePublished[\"']\s*:\s*[\"']([^\"']+)[\"']""", RegexOption.IGNORE_CASE)
     }
 }
