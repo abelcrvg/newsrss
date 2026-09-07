@@ -15,12 +15,12 @@ import java.time.ZonedDateTime
 class EspnSiteCrawler {
     suspend fun crawl(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
+            val sourceUri = URI(source.siteUrl.trimEnd('/'))
+            val origin = "${sourceUri.scheme}://${sourceUri.authority}"
             val base = source.siteUrl.trimEnd('/')
-            val urls = listOf(base, "$base/futebol", "$base/futebol/resultados")
-                .distinct()
+            val urls = listOf(base, "$origin/futebol", "$origin/futebol/resultados").distinct()
             val documents = urls.mapNotNull { runCatching { fetch(it) }.getOrNull() }
             val candidates = LinkedHashMap<String, FeedItem>()
-
             documents.forEach { document ->
                 document.select("a[href]").forEach { link ->
                     candidate(source, link)?.let { candidates.putIfAbsent(it.url, it) }
@@ -56,11 +56,7 @@ class EspnSiteCrawler {
         ).map { it.replace(Regex("\\s+"), " ").trim() }
             .firstOrNull { it.length in 12..240 } ?: return null
 
-        val context = link.closest("article")
-            ?: link.closest("li")
-            ?: link.closest("section")
-            ?: link.parent()
-            ?: return null
+        val context = link.closest("article") ?: link.closest("li") ?: link.closest("section") ?: link.parent() ?: return null
         if (context.parents().any { it.tagName() in setOf("nav", "header", "footer") }) return null
 
         val image = context.select("img, source").asSequence().mapNotNull(::imageSource).firstOrNull()
@@ -68,8 +64,7 @@ class EspnSiteCrawler {
             .asSequence()
             .mapNotNull { parseDate(it.attr("datetime").ifBlank { it.attr("content") }.ifBlank { it.text() }) }
             .firstOrNull()
-        val summary = context.select("p").map { it.text().trim() }
-            .firstOrNull { it.length >= 30 && it != title }
+        val summary = context.select("p").map { it.text().trim() }.firstOrNull { it.length >= 30 && it != title }
 
         return FeedItem(
             id = (source.id + url).hashCode().toUInt().toString(16),
@@ -92,7 +87,6 @@ class EspnSiteCrawler {
     }
 
     private fun looksLikeNoise(url: String): Boolean = listOf("logo", "avatar", "icon", "sprite", "placeholder", "tracking", "pixel", "1x1").any(url.lowercase()::contains)
-
     private fun parseDate(value: String): Instant? = runCatching { Instant.parse(value) }.getOrNull()
         ?: runCatching { OffsetDateTime.parse(value).toInstant() }.getOrNull()
         ?: runCatching { ZonedDateTime.parse(value).toInstant() }.getOrNull()
