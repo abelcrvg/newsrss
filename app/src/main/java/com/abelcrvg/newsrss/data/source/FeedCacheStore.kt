@@ -27,7 +27,7 @@ class FeedCacheStore(context: Context) {
                     )
                 )
             }
-        }
+        }.sortedWith(feedOrder())
     }.getOrDefault(emptyList())
 
     fun merge(items: List<FeedItem>) {
@@ -35,8 +35,9 @@ class FeedCacheStore(context: Context) {
         val merged = LinkedHashMap<String, FeedItem>()
         load().forEach { merged[it.url] = it }
         items.forEach { merged[it.url] = it }
+        val ordered = merged.values.sortedWith(feedOrder())
         val array = JSONArray()
-        merged.values.forEach { item ->
+        ordered.forEach { item ->
             array.put(JSONObject().apply {
                 put("id", item.id)
                 put("sourceId", item.sourceId)
@@ -51,6 +52,10 @@ class FeedCacheStore(context: Context) {
     }
 
     fun lastUpdatedAt(): Long = prefs.getLong(KEY_UPDATED_AT, 0L)
+
+    private fun feedOrder(): Comparator<FeedItem> =
+        compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }
+            .thenByDescending { it.id }
 
     private companion object {
         const val PREFS = "newsrss_feed_cache"
