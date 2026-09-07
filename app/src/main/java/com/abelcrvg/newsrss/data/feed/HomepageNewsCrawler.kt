@@ -24,35 +24,14 @@ class HomepageNewsCrawler {
 
             if (source.id == "the-verge" || baseHost == "theverge.com") {
                 val base = source.siteUrl.trimEnd('/')
-                val sectionUrls = listOf(
-                    base,
-                    "$base/tech",
-                    "$base/ai",
-                    "$base/science",
-                    "$base/entertainment",
-                    "$base/reviews",
-                    "$base/policy",
-                    "$base/security",
-                    "$base/games"
-                ).distinct()
-                sectionUrls.forEach { url ->
-                    runCatching { fetch(url) }.onSuccess { documents += it }
-                }
+                val sectionUrls = listOf(base, "$base/tech", "$base/ai", "$base/science", "$base/entertainment", "$base/reviews", "$base/policy", "$base/security", "$base/games").distinct()
+                sectionUrls.forEach { url -> runCatching { fetch(url) }.onSuccess { documents += it } }
             } else if (isGloboPortal(source, baseHost)) {
-                // GE/G1: always scan the real homepage first. The plantao archive is
-                // complementary, not a replacement for the homepage.
                 runCatching { fetch(source.siteUrl) }.onSuccess { documents += it }
-
-                // Walk the available plantao archive pages until the site stops returning
-                // new article links. There is deliberately no arbitrary item cap.
                 var page = 1
                 var emptyPages = 0
                 while (emptyPages < 2) {
-                    val url = if (page == 1) {
-                        "${source.siteUrl.trimEnd('/')}/plantao/"
-                    } else {
-                        "${source.siteUrl.trimEnd('/')}/plantao/index/feed/pagina-$page.ghtml"
-                    }
+                    val url = if (page == 1) "${source.siteUrl.trimEnd('/')}/plantao/" else "${source.siteUrl.trimEnd('/')}/plantao/index/feed/pagina-$page.ghtml"
                     val before = documents.sumOf { it.select("a[href]").size }
                     val result = runCatching { fetch(url) }
                     if (result.isFailure) break
@@ -66,9 +45,7 @@ class HomepageNewsCrawler {
 
             if (documents.isEmpty()) documents += fetch(source.siteUrl)
 
-            val candidates = documents.flatMap { document ->
-                document.select("a[href]").mapNotNull { link -> candidate(source, baseHost, link, document) }
-            }
+            val candidates = documents.flatMap { document -> document.select("a[href]").mapNotNull { link -> candidate(source, baseHost, link, document) } }
                 .groupBy { it.item.url }
                 .values
                 .map { it.maxBy { candidate -> candidate.score }.item }
@@ -87,11 +64,12 @@ class HomepageNewsCrawler {
     private fun candidate(source: FeedSource, baseHost: String, link: Element, document: Document): Candidate? {
         val url = link.absUrl("href").trim()
         if (!isValidUrl(url, baseHost)) return null
-        val title = extractTitle(link)
-        if (title.length !in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH) return null
         val article = link.closest("article")
         val card = link.closest("[class*=feed-post], [class*=feed-item], [class*=card], [class*=story], [class*=headline], [class*=noticia], [class*=materia], [class*=post], [class*=feed]")
         val context = article ?: card ?: link.parent() ?: return null
+        if (source.id == "uol" && isUolEditorial(link, context, url)) return null
+        val title = extractTitle(link)
+        if (title.length !in MIN_TITLE_LENGTH..MAX_TITLE_LENGTH) return null
         val contextText = context.text().replace(Regex("\\s+"), " ").trim()
         var score = 0
         if (article != null) score += 12
@@ -106,10 +84,19 @@ class HomepageNewsCrawler {
         if (findDateText(link, context) != null) score += 5
         if (isNavigationLike(link, url)) score -= 20
         if (score < MIN_SCORE) return null
-        val imageUrl = findImageInContext(link, context) ?: extractImageFromDocument(document, url)
+        val imageUrl = findImageInContext(link, context)
         val publishedAt = extractPublishedAt(link, context, document, url, contextText)
         val summary = context.select("p").map { it.text().replace(Regex("\\s+"), " ").trim() }.firstOrNull { it.length >= 30 && it != title }
         return Candidate(FeedItem((source.id + url).hashCode().toUInt().toString(16), source.id, title, url, summary, publishedAt, imageUrl), score)
+    }
+
+    /** UOL's opinion/blog/column areas are not treated as hard-news articles. */
+    private fun isUolEditorial(link: Element, context: Element, url: String): Boolean {
+        val lowerUrl = url.lowercase()
+        val structure = (listOf(link.className(), link.id(), link.text()) + context.className() + context.id() + context.text() + context.parents().take(4).flatMap { listOf(it.className(), it.id()) }).joinToString(" ").lowercase()
+        val editorialPath = listOf("/blog/", "/blogs/", "/colunas/", "/coluna/", "/opiniao/", "/opinião/", "/opiniao", "/opinião")
+        val editorialMarkers = listOf("blog do ", "blog ", "coluna", "colunista", "opinião", "opiniao", "jornalista")
+        return editorialPath.any(lowerUrl::contains) || editorialMarkers.any(structure::contains)
     }
 
     private fun isTheVergeArticleUrl(url: String): Boolean {
@@ -124,21 +111,7 @@ class HomepageNewsCrawler {
             context.select("img, picture img, picture source, source").take(12).forEach { add(it) }
         }.distinct()
         nodes.forEach { node -> imageSource(node)?.let { url -> if (!looksLikeLogo(url)) return url } }
-        context.select("[style*=background-image], [data-background-image], [data-bg], [data-bg-src]").forEach { element ->
-            backgroundImageSource(element)?.let { url -> if (!looksLikeLogo(url)) return url }
-        }
-        return null
-    }
-
-    private fun extractImageFromDocument(document: Document, articleUrl: String): String? {
-        val metadata = document.select("meta[property=og:image][content], meta[property=og:image:url][content], meta[name=twitter:image][content], meta[name=twitter:image:src][content], link[rel=image_src][href]")
-            .mapNotNull { it.attr("content").ifBlank { it.attr("href") }.takeIf(String::isNotBlank) }
-            .map { normalizeImageUrl(it, document.baseUri()) }
-            .firstOrNull { it.isNotBlank() && !looksLikeLogo(it) }
-        if (metadata != null) return metadata
-        document.select("[style*=background-image], [data-background-image], [data-bg], [data-bg-src]").forEach { element ->
-            backgroundImageSource(element)?.let { image -> if (!looksLikeLogo(image) && articleUrl.isNotBlank()) return image }
-        }
+        context.select("[style*=background-image], [data-background-image], [data-bg], [data-bg-src]").forEach { element -> backgroundImageSource(element)?.let { url -> if (!looksLikeLogo(url)) return url } }
         return null
     }
 
@@ -146,7 +119,7 @@ class HomepageNewsCrawler {
         val attrs = listOf("src", "data-src", "data-lazy-src", "data-original", "data-image", "data-url", "data-thumb", "data-image-url", "data-bg", "data-bg-src", "data-background-image", "data-original-src", "data-lazy", "data-fallback-src", "data-placeholder-src")
         attrs.firstNotNullOfOrNull { image.attr(it).takeIf(String::isNotBlank) }?.let { normalizeImageUrl(it, image.baseUri()).takeIf(String::isNotBlank) }?.let { return it }
         val srcset = image.attr("srcset").ifBlank { image.attr("data-srcset") }
-        srcset.split(",").asSequence().map { it.trim().substringBefore(" ") }.map { normalizeImageUrl(it, image.baseUri()) }.filter { it.isNotBlank() }.maxByOrNull { imageWidthHint(it, srcset) }?.let { return it }
+        srcset.split(',').asSequence().map { it.trim().substringBefore(" ") }.map { normalizeImageUrl(it, image.baseUri()) }.filter { it.isNotBlank() }.maxByOrNull { imageWidthHint(it, srcset) }?.let { return it }
         return null
     }
 
@@ -232,7 +205,7 @@ class HomepageNewsCrawler {
         const val MAX_TITLE_LENGTH = 180
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.1"
         const val REFERRER = "https://www.google.com/"
-        val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
+        val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\s*\\\"([^\\\"]+)\\\"")
         val DATE_IN_URL_REGEX = Regex("(20\\d{2}[-/]\\d{2}[-/]\\d{2})(?:[T/-](\\d{2}[-:]\\d{2}))?")
     }
 }
