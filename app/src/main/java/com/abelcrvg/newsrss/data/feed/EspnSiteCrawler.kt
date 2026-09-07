@@ -3,6 +3,9 @@ package com.abelcrvg.newsrss.data.feed
 import com.abelcrvg.newsrss.core.feed.FeedItem
 import com.abelcrvg.newsrss.core.model.FeedSource
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
@@ -11,15 +14,16 @@ import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZonedDateTime
 
-/** Dedicated crawler for ESPN pages, whose article cards are not reliably exposed by generic selectors. */
+/** Dedicated crawler for ESPN Brasil football pages. */
 class EspnSiteCrawler {
     suspend fun crawl(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
-            val sourceUri = URI(source.siteUrl.trimEnd('/'))
-            val origin = "${sourceUri.scheme}://${sourceUri.authority}"
-            val base = source.siteUrl.trimEnd('/')
-            val urls = listOf(base, "$origin/futebol", "$origin/futebol/resultados").distinct()
-            val documents = urls.mapNotNull { runCatching { fetch(it) }.getOrNull() }
+            val documents = coroutineScope {
+                listOf("https://www.espn.com.br/futebol", "https://www.espn.com.br/futebol/resultados")
+                    .map { url -> async(Dispatchers.IO) { runCatching { fetch(url) }.getOrNull() } }
+                    .awaitAll()
+                    .filterNotNull()
+            }
             val candidates = LinkedHashMap<String, FeedItem>()
             documents.forEach { document ->
                 document.select("a[href]").forEach { link ->
@@ -34,6 +38,8 @@ class EspnSiteCrawler {
     private fun fetch(url: String) = Jsoup.connect(url)
         .userAgent(USER_AGENT)
         .referrer("https://www.google.com/")
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+        .header("Accept-Language", "pt-BR,pt;q=0.9,en;q=0.7")
         .timeout(TIMEOUT)
         .followRedirects(true)
         .get()
@@ -41,7 +47,7 @@ class EspnSiteCrawler {
     private fun candidate(source: FeedSource, link: Element): FeedItem? {
         val url = link.absUrl("href").trim()
         val uri = runCatching { URI(url) }.getOrNull() ?: return null
-        val host = uri.host?.removePrefix("www.") ?: return null
+        val host = uri.host?.lowercase()?.removePrefix("www.") ?: return null
         if (host != "espn.com.br" && !host.endsWith(".espn.com.br")) return null
         val path = uri.path.orEmpty().lowercase()
         if (!path.startsWith("/futebol/")) return null
@@ -49,32 +55,20 @@ class EspnSiteCrawler {
         if (!path.contains("/artigo/") && !path.contains("/noticias/") && !path.contains("/story/")) return null
 
         val title = sequenceOf(
-            link.selectFirst("h1,h2,h3,h4,h5")?.text().orEmpty(),
-            link.text(),
-            link.attr("aria-label"),
-            link.attr("title")
-        ).map { it.replace(Regex("\\s+"), " ").trim() }
-            .firstOrNull { it.length in 12..240 } ?: return null
+            link.selectFirst("h1,h2,h3,h4,h5")?.text(), link.text(), link.attr("aria-label"), link.attr("title")
+        ).mapNotNull { it?.replace(Regex("\\s+"), " ")?.trim()?.takeIf { value -> value.length in 12..240 } }
+            .firstOrNull() ?: return null
 
         val context = link.closest("article") ?: link.closest("li") ?: link.closest("section") ?: link.parent() ?: return null
         if (context.parents().any { it.tagName() in setOf("nav", "header", "footer") }) return null
 
-        val image = context.select("img, source").asSequence().mapNotNull(::imageSource).firstOrNull()
-        val date = context.select("time[datetime], [itemprop=datePublished], meta[property=datePublished]")
-            .asSequence()
+        val image = context.select("img,source").asSequence().mapNotNull(::imageSource).firstOrNull()
+        val date = context.select("time[datetime], [itemprop=datePublished], meta[property=datePublished]").asSequence()
             .mapNotNull { parseDate(it.attr("datetime").ifBlank { it.attr("content") }.ifBlank { it.text() }) }
             .firstOrNull()
         val summary = context.select("p").map { it.text().trim() }.firstOrNull { it.length >= 30 && it != title }
 
-        return FeedItem(
-            id = (source.id + url).hashCode().toUInt().toString(16),
-            sourceId = source.id,
-            title = title,
-            url = url,
-            summary = summary,
-            publishedAt = date,
-            imageUrl = image
-        )
+        return FeedItem((source.id + url).hashCode().toUInt().toString(16), source.id, title, url, summary, date, image)
     }
 
     private fun imageSource(element: Element): String? {
@@ -92,7 +86,7 @@ class EspnSiteCrawler {
         ?: runCatching { ZonedDateTime.parse(value).toInstant() }.getOrNull()
 
     private companion object {
-        const val TIMEOUT = 15_000
-        const val USER_AGENT = "Mozilla/5.0 (Android) AppleWebKit/537.36 Chrome/128 Mobile Safari/537.36"
+        const val TIMEOUT = 10_000
+        const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.3"
     }
 }
