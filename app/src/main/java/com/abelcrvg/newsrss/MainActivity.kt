@@ -32,8 +32,10 @@ import com.abelcrvg.newsrss.core.model.ArticleBlock
 import com.abelcrvg.newsrss.core.model.FeedSource
 import com.abelcrvg.newsrss.core.model.NewsCategory
 import com.abelcrvg.newsrss.core.source.SourceRegistry
+import com.abelcrvg.newsrss.data.background.NewsRefreshScheduler
 import com.abelcrvg.newsrss.data.extraction.JsoupArticleExtractor
 import com.abelcrvg.newsrss.data.feed.SmartFeedReader
+import com.abelcrvg.newsrss.data.source.FeedCacheStore
 import com.abelcrvg.newsrss.data.source.ReadArticleStore
 import com.abelcrvg.newsrss.data.source.SavedArticleStore
 import com.abelcrvg.newsrss.data.source.SourceStore
@@ -60,6 +62,7 @@ class MainActivity : ComponentActivity() {
 private fun NewsRSSApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val sourceStore = remember { SourceStore(context.applicationContext) }
+    val cacheStore = remember { FeedCacheStore(context.applicationContext) }
     val readStore = remember { ReadArticleStore(context.applicationContext) }
     val savedStore = remember { SavedArticleStore(context.applicationContext) }
     var sources by remember { mutableStateOf(sourceStore.load(SourceRegistry.defaultSources)) }
@@ -67,7 +70,8 @@ private fun NewsRSSApp() {
     var readItems by remember { mutableStateOf(readStore.loadItems()) }
     var savedUrls by remember { mutableStateOf(savedStore.load()) }
     var savedItems by remember { mutableStateOf(savedStore.loadItems()) }
-    var items by remember { mutableStateOf<List<FeedItem>>(emptyList()) }
+    var items by remember { mutableStateOf(cacheStore.load()) }
+    var newItemsCount by remember { mutableIntStateOf(0) }
     var article by remember { mutableStateOf<Article?>(null) }
     var currentItem by remember { mutableStateOf<FeedItem?>(null) }
     var loading by remember { mutableStateOf(false) }
@@ -92,19 +96,31 @@ private fun NewsRSSApp() {
 
     fun refresh() {
         if (loading) return
-        loading = true; error = null; currentSource = null; completedSources = emptySet(); failedSources = emptySet(); items = emptyList()
+        loading = true
+        error = null
+        currentSource = null
+        completedSources = emptySet()
+        failedSources = emptySet()
+        newItemsCount = 0
         scope.launch {
             val enabledSources = sources.filter { it.enabled }
+            val knownUrls = items.asSequence().map { it.url }.toMutableSet()
             for (source in enabledSources) {
                 currentSource = source.id
                 val result = SmartFeedReader().read(source)
                 if (result.isSuccess) {
                     val sourceItems = result.getOrElse { emptyList() }.map { it.copy(sourceId = source.id) }
-                    items = (items + sourceItems).distinctBy { it.url }.sortedByDescending { it.publishedAt ?: Instant.EPOCH }
+                    val newCount = sourceItems.count { knownUrls.add(it.url) }
+                    if (newCount > 0) newItemsCount += newCount
+                    items = mergeFeedItems(items, sourceItems)
+                    cacheStore.merge(sourceItems)
                     completedSources = completedSources + source.id
-                } else failedSources = failedSources + source.id
+                } else {
+                    failedSources = failedSources + source.id
+                }
             }
-            currentSource = null; loading = false
+            currentSource = null
+            loading = false
             error = when {
                 items.isEmpty() && failedSources.isNotEmpty() -> "Nenhuma fonte conseguiu fornecer notícias."
                 failedSources.isNotEmpty() -> "Algumas fontes não puderam ser atualizadas."
@@ -132,7 +148,11 @@ private fun NewsRSSApp() {
         persistSources(sources + FeedSource(id, displayName, normalized, category = NewsCategory.NEWS)); urlInput = ""; refresh()
     }
 
-    LaunchedEffect(Unit) { refresh() }
+    LaunchedEffect(Unit) {
+        NewsRefreshScheduler.schedule(context.applicationContext)
+        NewsRefreshScheduler.refreshNow(context.applicationContext)
+        refresh()
+    }
     val visibleItems = remember(items, sources, selectedCategory, readUrls) { val unread = items.filterNot { it.url in readUrls }; selectedCategory?.let { category -> unread.filter { item -> sources.any { it.id == item.sourceId && it.enabled && it.category == category } } } ?: unread }
     if (article != null && currentItem != null) { BackHandler { article = null }; ReaderContent(article!!, currentItem!!.url in savedUrls, { article = null }, { toggleSaved(currentItem!!) }); return }
     LaunchedEffect(article) { if (article == null && (returnIndex > 0 || returnOffset > 0)) listState.scrollToItem(returnIndex, returnOffset) }
@@ -158,7 +178,16 @@ private fun NewsRSSApp() {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("NewsRSS", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                        Text(if (loading && currentSource != null) "Atualizando ${sources.firstOrNull { it.id == currentSource }?.name ?: "fonte"}…" else "${sources.count { it.enabled }} fontes ativas", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            when {
+                                loading && currentSource != null -> "Atualizando ${sources.firstOrNull { it.id == currentSource }?.name ?: "fonte"}…"
+                                newItemsCount > 0 -> "$newItemsCount ${if (newItemsCount == 1) "nova notícia" else "novas notícias"}"
+                                items.isNotEmpty() -> "Conteúdo atualizado em segundo plano"
+                                else -> "${sources.count { it.enabled }} fontes ativas"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (newItemsCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(onClick = { manageSources = true }) { Text("Fontes") }
@@ -190,6 +219,13 @@ private fun NewsRSSApp() {
             }
         }
     }
+}
+
+private fun mergeFeedItems(current: List<FeedItem>, incoming: List<FeedItem>): List<FeedItem> {
+    val merged = LinkedHashMap<String, FeedItem>()
+    current.forEach { merged[it.url] = it }
+    incoming.forEach { merged[it.url] = it }
+    return merged.values.sortedByDescending { it.publishedAt ?: Instant.EPOCH }
 }
 
 @Composable private fun LoadingView(sources: List<FeedSource>, currentSource: String?, completed: Set<String>, failed: Set<String>) {
