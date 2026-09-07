@@ -40,6 +40,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                 }
             }
             blocks = removeDuplicateLead(blocks, title, subtitle)
+            blocks = removeDuplicateContent(blocks)
             textLength = blocks.sumOf { textOf(it).length }
             if (textLength < MIN_CONTENT_LENGTH) {
                 val fallbackText = subtitle
@@ -101,6 +102,41 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             }
         }
         return result.distinct()
+    }
+
+    /**
+     * G1 and some other publishers expose a "highlights" list followed by the
+     * same sentences in the article body. Keep the first occurrence and remove
+     * later blocks that repeat already-rendered text, including list-item text.
+     */
+    private fun removeDuplicateContent(blocks: List<ArticleBlock>): List<ArticleBlock> {
+        val seen = mutableSetOf<String>()
+        val result = mutableListOf<ArticleBlock>()
+        blocks.forEach { block ->
+            when (block) {
+                is ArticleBlock.ListBlock -> {
+                    val uniqueItems = block.items.filter { item ->
+                        val key = normalizeText(item)
+                        key.isNotBlank() && seen.add(key)
+                    }
+                    if (uniqueItems.isNotEmpty()) result.add(block.copy(items = uniqueItems))
+                }
+                is ArticleBlock.Paragraph -> {
+                    if (seen.add(normalizeText(block.text.text))) result.add(block)
+                }
+                is ArticleBlock.Heading -> {
+                    if (seen.add(normalizeText(block.text))) result.add(block)
+                }
+                is ArticleBlock.Quote -> {
+                    if (seen.add(normalizeText(block.text))) result.add(block)
+                }
+                is ArticleBlock.Image -> {
+                    val key = "image:${block.url}"
+                    if (seen.add(key)) result.add(block)
+                }
+            }
+        }
+        return result
     }
 
     private fun extractSubtitle(document: org.jsoup.nodes.Document, title: String): String? {
