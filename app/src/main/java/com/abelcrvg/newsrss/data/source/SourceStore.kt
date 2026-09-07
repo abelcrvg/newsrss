@@ -3,11 +3,12 @@ package com.abelcrvg.newsrss.data.source
 import android.content.Context
 import com.abelcrvg.newsrss.core.model.FeedSource
 import com.abelcrvg.newsrss.core.model.NewsCategory
+import com.abelcrvg.newsrss.core.model.SourceAnalyzer
+import com.abelcrvg.newsrss.core.model.SourceLanguage
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URI
 
-/** Persists the user's source list locally and repairs/infers categories for known domains. */
+/** Persists source settings while upgrading older entries with automatic category/language detection. */
 class SourceStore(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -19,21 +20,24 @@ class SourceStore(context: Context) {
                 for (i in 0 until array.length()) {
                     val item = array.getJSONObject(i)
                     val siteUrl = item.getString("siteUrl")
+                    val inferred = SourceAnalyzer.infer(siteUrl)
                     val storedCategory = runCatching { NewsCategory.valueOf(item.optString("category")) }.getOrDefault(NewsCategory.NEWS)
+                    val storedLanguage = runCatching { SourceLanguage.valueOf(item.optString("language")) }.getOrDefault(SourceLanguage.AUTO)
+                    val category = if (storedCategory == NewsCategory.NEWS) inferred.category else storedCategory
+                    val language = if (storedLanguage == SourceLanguage.AUTO) inferred.language else storedLanguage
                     add(
                         FeedSource(
                             id = item.getString("id"),
                             name = item.getString("name"),
                             siteUrl = siteUrl,
                             feedUrl = item.optString("feedUrl").takeIf { it.isNotBlank() },
-                            category = inferCategory(siteUrl, storedCategory),
+                            category = category,
+                            language = language,
                             enabled = item.optBoolean("enabled", true)
                         )
                     )
                 }
             }
-
-            // Keep user settings, but automatically add newly bundled default sources.
             val storedIds = stored.map { it.id }.toSet()
             stored + defaults.filterNot { it.id in storedIds }
         }.getOrDefault(defaults)
@@ -48,28 +52,13 @@ class SourceStore(context: Context) {
                     put("name", source.name)
                     put("siteUrl", source.siteUrl)
                     put("feedUrl", source.feedUrl ?: "")
-                    put("category", inferCategory(source.siteUrl, source.category).name)
+                    put("category", source.category.name)
+                    put("language", source.language.name)
                     put("enabled", source.enabled)
                 }
             )
         }
         prefs.edit().putString(KEY_SOURCES, array.toString()).apply()
-    }
-
-    private fun inferCategory(siteUrl: String, current: NewsCategory): NewsCategory {
-        val uri = runCatching { URI(siteUrl) }.getOrNull() ?: return current
-        val host = uri.host.orEmpty().removePrefix("www.").lowercase()
-        val path = uri.path.orEmpty().lowercase()
-        return when {
-            host == "skysports.com" || host.endsWith(".skysports.com") -> NewsCategory.FOOTBALL
-            path.contains("/football") || path.contains("/soccer") -> NewsCategory.FOOTBALL
-            path.contains("/games") || path.contains("/gaming") -> NewsCategory.GAMES
-            path.contains("/tech") || path.contains("/technology") -> NewsCategory.TECHNOLOGY
-            path.contains("/science") -> NewsCategory.SCIENCE
-            path.contains("/economy") || path.contains("/business") || path.contains("/finance") -> NewsCategory.ECONOMY
-            path.contains("/movies") || path.contains("/cinema") || path.contains("/tv") -> NewsCategory.MOVIES
-            else -> current
-        }
     }
 
     private companion object {
