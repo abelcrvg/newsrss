@@ -91,7 +91,7 @@ class SkySportsSiteCrawler {
             ?: element.attr("srcset").split(',').asSequence().map { it.trim().substringBefore(' ') }.firstOrNull { it.isNotBlank() }
         if (raw.isNullOrBlank()) return null
         val normalized = if (raw.startsWith("//")) "https:$raw" else runCatching { URI(element.baseUri()).resolve(raw).toString() }.getOrElse { raw }
-        return normalized.takeIf { it.startsWith("http://") || it.startsWith("https://") && !looksLikeNoise(it) }
+        return normalized.takeIf { (it.startsWith("http://") || it.startsWith("https://")) && !looksLikeNoise(it) }
     }
 
     private fun looksLikeNoise(url: String): Boolean = listOf("logo", "avatar", "icon", "sprite", "placeholder", "tracking", "pixel", "1x1").any(url.lowercase()::contains)
