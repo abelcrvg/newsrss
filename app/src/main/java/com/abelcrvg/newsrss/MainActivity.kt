@@ -111,7 +111,7 @@ private fun NewsRSSApp() {
                 val result = SmartFeedReader().read(source)
                 if (result.isSuccess) {
                     var sourceItems = result.getOrElse { emptyList() }.map { it.copy(sourceId = source.id) }
-                    if (source.id == "the-verge" && sourceItems.isNotEmpty()) {
+                    if (source.category == NewsCategory.ENGLISH && sourceItems.isNotEmpty()) {
                         sourceItems = OnDeviceTranslator(context.applicationContext).translateFeedItems(sourceItems)
                     }
                     val newCount = sourceItems.count { knownUrls.add(it.url) }
@@ -259,18 +259,14 @@ private fun mergeFeedItems(current: List<FeedItem>, incoming: List<FeedItem>): L
             imageUrl = fresh.imageUrl?.takeIf { it.isNotBlank() } ?: previous.imageUrl
         )
     }
-    return merged.values.sortedWith(
-        compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }
-            .thenByDescending { it.id }
-    )
+    return merged.values.sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenByDescending { it.id })
 }
 
 @Composable private fun LoadingView(sources: List<FeedSource>, currentSource: String?, completed: Set<String>, failed: Set<String>) {
     Card(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), shape = MaterialTheme.shapes.large) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                CircularProgressIndicator(strokeWidth = 3.dp, modifier = Modifier.size(28.dp))
-                Column { LoadingStatus(sources, currentSource, completed, failed) }
+                CircularProgressIndicator(strokeWidth = 3.dp, modifier = Modifier.size(28.dp)); Column { LoadingStatus(sources, currentSource, completed, failed) }
             }
             LinearProgressIndicator(progress = { ((completed.size + failed.size).toFloat() / sources.count { it.enabled }.coerceAtLeast(1)).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
         }
@@ -278,43 +274,26 @@ private fun mergeFeedItems(current: List<FeedItem>, incoming: List<FeedItem>): L
 }
 
 @Composable private fun LoadingStatus(sources: List<FeedSource>, currentSource: String?, completed: Set<String>, failed: Set<String>) {
-    val current = sources.firstOrNull { it.id == currentSource }
-    val done = completed.size + failed.size
+    val current = sources.firstOrNull { it.id == currentSource }; val done = completed.size + failed.size
     Text(if (current != null) "Varrendo ${current.name}…" else "Preparando varredura…", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
     Text("$done/${sources.count { it.enabled }} fontes concluídas", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     if (completed.isNotEmpty() || failed.isNotEmpty()) Text(buildString { completed.mapNotNull { id -> sources.firstOrNull { it.id == id }?.name }.takeLast(3).forEach { append("✓ $it  ") }; failed.mapNotNull { id -> sources.firstOrNull { it.id == id }?.name }.takeLast(2).forEach { append("✕ $it  ") } }.trim(), style = MaterialTheme.typography.labelSmall)
 }
 
 @Composable private fun ErrorView(message: String, onRetry: () -> Unit) {
-    Card(Modifier.fillMaxWidth().padding(20.dp), shape = MaterialTheme.shapes.large) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Não foi possível atualizar", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text(message, color = MaterialTheme.colorScheme.error)
-            Button(onClick = onRetry) { Text("Tentar novamente") }
-        }
-    }
+    Card(Modifier.fillMaxWidth().padding(20.dp), shape = MaterialTheme.shapes.large) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { Text("Não foi possível atualizar", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Text(message, color = MaterialTheme.colorScheme.error); Button(onClick = onRetry) { Text("Tentar novamente") } } }
 }
 
 @Composable private fun EmptyState(tab: Int) {
-    Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(if (tab == 1) "Ainda não há notícias lidas" else if (tab == 2) "Sua lista está vazia" else "Nenhuma notícia encontrada", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-            Text(if (tab == 2) "Salve uma notícia para ler depois." else "Quando houver conteúdo, ele aparecerá aqui.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
+    Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(if (tab == 1) "Ainda não há notícias lidas" else if (tab == 2) "Sua lista está vazia" else "Nenhuma notícia encontrada", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold); Text(if (tab == 2) "Salve uma notícia para ler depois." else "Quando houver conteúdo, ele aparecerá aqui.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
 }
 
 @Composable private fun TabButton(label: String, selected: Boolean, onClick: () -> Unit) {
-    Surface(modifier = Modifier.clickable(onClick = onClick), shape = MaterialTheme.shapes.large, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, tonalElevation = if (selected) 2.dp else 0.dp) {
-        Text(label, modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp), style = MaterialTheme.typography.labelLarge)
-    }
+    Surface(modifier = Modifier.clickable(onClick = onClick), shape = MaterialTheme.shapes.large, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, tonalElevation = if (selected) 2.dp else 0.dp) { Text(label, modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp), style = MaterialTheme.typography.labelLarge) }
 }
 
 @Composable private fun CategoryFilter(selected: NewsCategory?, onSelected: (NewsCategory?) -> Unit) {
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        TabButton("Todos", selected == null) { onSelected(null) }
-        NewsCategory.entries.forEach { c -> TabButton(c.label, selected == c) { onSelected(c) } }
-    }
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { TabButton("Todos", selected == null) { onSelected(null) }; NewsCategory.entries.forEach { c -> TabButton(c.label, selected == c) { onSelected(c) } } }
 }
 
 @Composable private fun SourceManager(sources: List<FeedSource>, urlInput: String, onUrlChange: (String) -> Unit, sourceError: String?, onAdd: () -> Unit, onBack: () -> Unit, onToggle: (FeedSource) -> Unit, onCategoryChange: (FeedSource, NewsCategory) -> Unit, onDelete: (FeedSource) -> Unit) {
@@ -333,10 +312,7 @@ private fun mergeFeedItems(current: List<FeedItem>, incoming: List<FeedItem>): L
         Column {
             item.imageUrl?.let { AsyncImage(model = it, contentDescription = item.title, modifier = Modifier.fillMaxWidth().height(190.dp), contentScale = ContentScale.Crop) }
             Column(Modifier.padding(16.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text(source?.name ?: "Fonte", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                    item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text(source?.name ?: "Fonte", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                 Spacer(Modifier.height(7.dp)); Text(item.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, lineHeight = 26.sp)
                 item.summary?.takeIf { it.isNotBlank() }?.let { Spacer(Modifier.height(7.dp)); Text(it, maxLines = 3, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 21.sp) }
                 if (saved) { Spacer(Modifier.height(9.dp)); Text("🔖 Salva para ler depois", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
@@ -376,12 +352,7 @@ private fun AnnotatedString.Builder.appendInline(node: Node, highlightColor: Col
         "b", "strong" -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { node.childNodes().forEach { appendInline(it, highlightColor) } }
         "i", "em" -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { node.childNodes().forEach { appendInline(it, highlightColor) } }
         "a", "mark" -> withStyle(SpanStyle(color = highlightColor, fontWeight = FontWeight.Bold, textDecoration = TextDecoration.Underline)) { node.childNodes().forEach { appendInline(it, highlightColor) } }
-        "span" -> {
-            val style = node.attr("style").lowercase(Locale.ROOT)
-            val color = extractCssColor(style)
-            val bold = style.contains("font-weight:bold") || style.contains("font-weight:700") || style.contains("font-weight: 700") || color != null
-            if (color != null || bold) withStyle(SpanStyle(color = color ?: Color.Unspecified, fontWeight = if (bold) FontWeight.Bold else null)) { node.childNodes().forEach { appendInline(it, highlightColor) } } else node.childNodes().forEach { appendInline(it, highlightColor) }
-        }
+        "span" -> { val style = node.attr("style").lowercase(Locale.ROOT); val color = extractCssColor(style); val bold = style.contains("font-weight:bold") || style.contains("font-weight:700") || style.contains("font-weight: 700") || color != null; if (color != null || bold) withStyle(SpanStyle(color = color ?: Color.Unspecified, fontWeight = if (bold) FontWeight.Bold else null)) { node.childNodes().forEach { appendInline(it, highlightColor) } } else node.childNodes().forEach { appendInline(it, highlightColor) } }
         else -> node.childNodes().forEach { appendInline(it, highlightColor) }
     }
 } }
