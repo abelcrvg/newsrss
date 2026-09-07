@@ -14,18 +14,23 @@ class FeedCacheStore(context: Context) {
         val array = JSONArray(prefs.getString(KEY_ITEMS, "[]"))
         buildList {
             for (i in 0 until array.length()) {
-                val o = array.getJSONObject(i)
-                add(
-                    FeedItem(
-                        id = o.getString("id"),
-                        sourceId = o.getString("sourceId"),
-                        title = o.getString("title"),
-                        url = o.getString("url"),
-                        summary = o.optString("summary").takeIf(String::isNotBlank),
-                        publishedAt = o.optString("publishedAt").takeIf(String::isNotBlank)?.let(Instant::parse),
-                        imageUrl = o.optString("imageUrl").takeIf(String::isNotBlank)
+                runCatching {
+                    val o = array.getJSONObject(i)
+                    val publishedAt = o.optString("publishedAt").takeIf(String::isNotBlank)?.let { value ->
+                        runCatching { Instant.parse(value) }.getOrNull()
+                    }
+                    add(
+                        FeedItem(
+                            id = o.getString("id"),
+                            sourceId = o.getString("sourceId"),
+                            title = o.getString("title"),
+                            url = o.getString("url"),
+                            summary = o.optString("summary").takeIf(String::isNotBlank),
+                            publishedAt = publishedAt,
+                            imageUrl = o.optString("imageUrl").takeIf(String::isNotBlank)
+                        )
                     )
-                )
+                }
             }
         }.sortedWith(feedOrder())
     }.getOrDefault(emptyList())
@@ -34,7 +39,18 @@ class FeedCacheStore(context: Context) {
         if (items.isEmpty()) return
         val merged = LinkedHashMap<String, FeedItem>()
         load().forEach { merged[it.url] = it }
-        items.forEach { merged[it.url] = it }
+        items.forEach { fresh ->
+            val previous = merged[fresh.url]
+            merged[fresh.url] = if (previous == null) fresh else previous.copy(
+                id = fresh.id,
+                sourceId = fresh.sourceId,
+                title = fresh.title.ifBlank { previous.title },
+                url = fresh.url,
+                summary = fresh.summary?.takeIf { it.isNotBlank() } ?: previous.summary,
+                publishedAt = fresh.publishedAt ?: previous.publishedAt,
+                imageUrl = fresh.imageUrl?.takeIf { it.isNotBlank() } ?: previous.imageUrl
+            )
+        }
         val ordered = merged.values.sortedWith(feedOrder())
         val array = JSONArray()
         ordered.forEach { item ->
