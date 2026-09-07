@@ -130,35 +130,56 @@ private fun NewsRSSApp() {
     }
 
     fun openItem(item: FeedItem) {
-        returnIndex = listState.firstVisibleItemIndex; returnOffset = listState.firstVisibleItemScrollOffset; currentItem = item; markRead(item); opening = true; error = null
-        scope.launch { JsoupArticleExtractor().extract(item.url).onSuccess { extracted ->
-            article = if (sources.firstOrNull { it.id == item.sourceId }?.category == NewsCategory.ENGLISH) OnDeviceTranslator(context.applicationContext).translateArticle(extracted) else extracted
-            article = article?.copy(publishedAt = article?.publishedAt ?: item.publishedAt); opening = false
-        }.onFailure { failure -> error = failure.message ?: "Não foi possível abrir a notícia."; opening = false } }
+        returnIndex = listState.firstVisibleItemIndex
+        returnOffset = listState.firstVisibleItemScrollOffset
+        currentItem = item
+        markRead(item)
+        opening = true
+        error = null
+        scope.launch {
+            JsoupArticleExtractor().extract(item.url).onSuccess { extracted ->
+                article = if (sources.firstOrNull { it.id == item.sourceId }?.category == NewsCategory.ENGLISH) OnDeviceTranslator(context.applicationContext).translateArticle(extracted) else extracted
+                article = article?.copy(publishedAt = article?.publishedAt ?: item.publishedAt)
+                opening = false
+            }.onFailure { failure -> error = failure.message ?: "Não foi possível abrir a notícia."; opening = false }
+        }
     }
 
     fun addSource() {
-        sourceError = null; val normalized = urlInput.trim().removeSuffix("/"); val uri = runCatching { URI(normalized) }.getOrNull()
+        sourceError = null
+        val normalized = urlInput.trim().removeSuffix("/")
+        val uri = runCatching { URI(normalized) }.getOrNull()
         if (uri == null || uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) { sourceError = "Digite uma URL válida, por exemplo: https://www.uol.com.br"; return }
-        val host = uri.host.removePrefix("www."); val path = uri.path.orEmpty().trim('/').replace(Regex("[^a-zA-Z0-9]+"), "-").trim('-')
+        val host = uri.host.removePrefix("www.")
+        val path = uri.path.orEmpty().trim('/').replace(Regex("[^a-zA-Z0-9]+"), "-").trim('-')
         val baseId = "custom-" + (host + if (path.isNotBlank()) "-$path" else "").replace(Regex("[^a-zA-Z0-9]+"), "-").trim('-').lowercase(Locale.ROOT)
         if (sources.any { it.siteUrl.equals(normalized, ignoreCase = true) }) { sourceError = "Essa fonte já está adicionada."; return }
         val id = if (sources.none { it.id == baseId }) baseId else "${baseId.take(80)}-${normalized.hashCode().toUInt().toString(16).takeLast(8)}"
         val displayName = path.substringAfterLast('-').takeIf { it.isNotBlank() }?.replaceFirstChar { it.uppercase() } ?: host.substringBefore('.').replaceFirstChar { it.uppercase() }
-        persistSources(sources + FeedSource(id, displayName, normalized, category = NewsCategory.NEWS)); urlInput = ""; refresh()
+        persistSources(sources + FeedSource(id, displayName, normalized, category = NewsCategory.NEWS))
+        urlInput = ""
+        refresh()
     }
 
     LaunchedEffect(Unit) {
         NewsRefreshScheduler.schedule(context.applicationContext)
-        NewsRefreshScheduler.refreshNow(context.applicationContext)
         refresh()
     }
-    val visibleItems = remember(items, sources, selectedCategory, readUrls) { val unread = items.filterNot { it.url in readUrls }; selectedCategory?.let { category -> unread.filter { item -> sources.any { it.id == item.sourceId && it.enabled && it.category == category } } } ?: unread }
-    if (article != null && currentItem != null) { BackHandler { article = null }; ReaderContent(article!!, currentItem!!.url in savedUrls, { article = null }, { toggleSaved(currentItem!!) }); return }
+
+    val visibleItems = remember(items, sources, selectedCategory, readUrls) {
+        val unread = items.filterNot { it.url in readUrls }
+        selectedCategory?.let { category -> unread.filter { item -> sources.any { it.id == item.sourceId && it.enabled && it.category == category } } } ?: unread
+    }
+    if (article != null && currentItem != null) {
+        BackHandler { article = null }
+        ReaderContent(article!!, currentItem!!.url in savedUrls, { article = null }, { toggleSaved(currentItem!!) })
+        return
+    }
     LaunchedEffect(article) { if (article == null && (returnIndex > 0 || returnOffset > 0)) listState.scrollToItem(returnIndex, returnOffset) }
     if (manageSources) {
         BackHandler { manageSources = false }
-        SourceManager(sources, urlInput, { urlInput = it }, sourceError, { addSource() }, { manageSources = false }, { source -> persistSources(sources.map { if (it.id == source.id) it.copy(enabled = !it.enabled) else it }) }, { source, category -> persistSources(sources.map { if (it.id == source.id) it.copy(category = category) else it }) }, { source -> persistSources(sources.filterNot { it.id == source.id }); refresh() }); return
+        SourceManager(sources, urlInput, { urlInput = it }, sourceError, { addSource() }, { manageSources = false }, { source -> persistSources(sources.map { if (it.id == source.id) it.copy(enabled = !it.enabled) else it }) }, { source, category -> persistSources(sources.map { if (it.id == source.id) it.copy(category = category) else it }) }, { source -> persistSources(sources.filterNot { it.id == source.id }); refresh() })
+        return
     }
     val displayItems = when (tab) { 1 -> readItems; 2 -> savedItems; else -> visibleItems }
     val heading = when (tab) { 1 -> "Notícias lidas"; 2 -> "Ler depois"; else -> selectedCategory?.label ?: "Principais e recentes" }
@@ -196,9 +217,7 @@ private fun NewsRSSApp() {
                 }
                 Spacer(Modifier.height(14.dp))
                 if (tab == 0) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        TabButton("Notícias", true) { tab = 0 }
-                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) { TabButton("Notícias", true) { tab = 0 } }
                     Spacer(Modifier.height(10.dp))
                     CategoryFilter(selectedCategory) { selectedCategory = it }
                 }
@@ -224,8 +243,22 @@ private fun NewsRSSApp() {
 private fun mergeFeedItems(current: List<FeedItem>, incoming: List<FeedItem>): List<FeedItem> {
     val merged = LinkedHashMap<String, FeedItem>()
     current.forEach { merged[it.url] = it }
-    incoming.forEach { merged[it.url] = it }
-    return merged.values.sortedByDescending { it.publishedAt ?: Instant.EPOCH }
+    incoming.forEach { fresh ->
+        val previous = merged[fresh.url]
+        merged[fresh.url] = if (previous == null) fresh else previous.copy(
+            id = fresh.id,
+            sourceId = fresh.sourceId,
+            title = fresh.title.ifBlank { previous.title },
+            url = fresh.url,
+            summary = fresh.summary?.takeIf { it.isNotBlank() } ?: previous.summary,
+            publishedAt = fresh.publishedAt ?: previous.publishedAt,
+            imageUrl = fresh.imageUrl?.takeIf { it.isNotBlank() } ?: previous.imageUrl
+        )
+    }
+    return merged.values.sortedWith(
+        compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }
+            .thenByDescending { it.id }
+    )
 }
 
 @Composable private fun LoadingView(sources: List<FeedSource>, currentSource: String?, completed: Set<String>, failed: Set<String>) {
@@ -308,11 +341,45 @@ private fun mergeFeedItems(current: List<FeedItem>, incoming: List<FeedItem>): L
     }
 }
 
-@Composable private fun ReaderContent(article: Article, saved: Boolean, onBack: () -> Unit, onToggleSaved: () -> Unit) { val highlightColor = if (article.sourceId.lowercase(Locale.ROOT).removePrefix("www.") == "ge.globo.com") Color(0xFF168A45) else MaterialTheme.colorScheme.error; Scaffold(topBar = { TopAppBar(title = { Text("Notícia") }, navigationIcon = { TextButton(onClick = onBack) { Text("Voltar") } }, actions = { IconButton(onClick = onToggleSaved) { Text("🔖") } }) }) { padding -> LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 18.dp, bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) { item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = onToggleSaved) { Text(if (saved) "Remover de Ler depois" else "🔖 Ler depois") } } }; item { Text(article.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, lineHeight = 38.sp) }; article.subtitle?.takeIf { it.isNotBlank() }?.let { item { Text(it, style = MaterialTheme.typography.titleMedium, lineHeight = 25.sp) } }; article.author?.takeIf { it.isNotBlank() }?.let { item { Text("Por $it", style = MaterialTheme.typography.labelLarge) } }; article.publishedAt?.let { item { Text(publishedLabel(it), style = MaterialTheme.typography.labelMedium) } }; if (!article.heroImageUrl.isNullOrBlank() && article.blocks.none { it is ArticleBlock.Image && it.url == article.heroImageUrl }) item { AsyncImage(article.heroImageUrl, article.title, Modifier.fillMaxWidth().heightIn(max = 300.dp), contentScale = ContentScale.FillWidth) }; article.blocks.forEach { block -> item { when (block) { is ArticleBlock.Paragraph -> Text(if (block.inlineHtml.isNullOrBlank()) block.text else inlineAnnotated(block.inlineHtml, highlightColor), style = MaterialTheme.typography.bodyLarge, fontSize = 18.sp, lineHeight = 29.sp); is ArticleBlock.Heading -> Text(block.text, style = if (block.level <= 2) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); is ArticleBlock.Image -> Column { AsyncImage(block.url, block.altText ?: article.title, Modifier.fillMaxWidth().heightIn(max = 360.dp), contentScale = ContentScale.FillWidth); block.caption?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.labelMedium) } }; is ArticleBlock.Quote -> Text("“${block.text}”${block.author?.let { " — $it" } ?: ""}", style = MaterialTheme.typography.bodyLarge, fontStyle = FontStyle.Italic, fontSize = 18.sp, lineHeight = 29.sp); is ArticleBlock.ListBlock -> Column { block.items.forEachIndexed { index, text -> Text(if (block.ordered) "${index + 1}. $text" else "• $text", style = MaterialTheme.typography.bodyLarge, fontSize = 18.sp, lineHeight = 29.sp) } } } } } } }
+@Composable private fun ReaderContent(article: Article, saved: Boolean, onBack: () -> Unit, onToggleSaved: () -> Unit) {
+    val highlightColor = if (article.sourceId.lowercase(Locale.ROOT).removePrefix("www.") == "ge.globo.com") Color(0xFF168A45) else MaterialTheme.colorScheme.error
+    Scaffold(topBar = { TopAppBar(title = { Text("Notícia") }, navigationIcon = { TextButton(onClick = onBack) { Text("Voltar") } }, actions = { IconButton(onClick = onToggleSaved) { Text("🔖") } }) }) { padding ->
+        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 18.dp, bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = onToggleSaved) { Text(if (saved) "Remover de Ler depois" else "🔖 Ler depois") } } }
+            item { Text(article.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, lineHeight = 38.sp) }
+            article.subtitle?.takeIf { it.isNotBlank() }?.let { item { Text(it, style = MaterialTheme.typography.titleMedium, lineHeight = 25.sp) } }
+            article.author?.takeIf { it.isNotBlank() }?.let { item { Text("Por $it", style = MaterialTheme.typography.labelLarge) } }
+            article.publishedAt?.let { item { Text(publishedLabel(it), style = MaterialTheme.typography.labelMedium) } }
+            if (!article.heroImageUrl.isNullOrBlank() && article.blocks.none { it is ArticleBlock.Image && it.url == article.heroImageUrl }) item { AsyncImage(article.heroImageUrl, article.title, Modifier.fillMaxWidth().heightIn(max = 300.dp), contentScale = ContentScale.FillWidth) }
+            article.blocks.forEach { block -> item { when (block) {
+                is ArticleBlock.Paragraph -> Text(if (block.inlineHtml.isNullOrBlank()) block.text else inlineAnnotated(block.inlineHtml, highlightColor), style = MaterialTheme.typography.bodyLarge, fontSize = 18.sp, lineHeight = 29.sp)
+                is ArticleBlock.Heading -> Text(block.text, style = if (block.level <= 2) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                is ArticleBlock.Image -> Column { AsyncImage(block.url, block.altText ?: article.title, Modifier.fillMaxWidth().heightIn(max = 360.dp), contentScale = ContentScale.FillWidth); block.caption?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.labelMedium) } }
+                is ArticleBlock.Quote -> Text("“${block.text}”${block.author?.let { " — $it" } ?: ""}", style = MaterialTheme.typography.bodyLarge, fontStyle = FontStyle.Italic, fontSize = 18.sp, lineHeight = 29.sp)
+                is ArticleBlock.ListBlock -> Column { block.items.forEachIndexed { index, text -> Text(if (block.ordered) "${index + 1}. $text" else "• $text", style = MaterialTheme.typography.bodyLarge, fontSize = 18.sp, lineHeight = 29.sp) }
+            } } } }
+        }
+    }
 }
-private fun inlineAnnotated(html: String, highlightColor: Color): AnnotatedString { val doc = org.jsoup.Jsoup.parseBodyFragment(html); return buildAnnotatedStringFromNode(doc.body(), highlightColor) }
+
+private fun inlineAnnotated(html: String, highlightColor: Color): AnnotatedString = buildAnnotatedStringFromNode(org.jsoup.Jsoup.parseBodyFragment(html).body(), highlightColor)
 private fun buildAnnotatedStringFromNode(root: Element, highlightColor: Color): AnnotatedString = buildAnnotatedStringFromNode(root.childNodes(), highlightColor)
 private fun buildAnnotatedStringFromNode(nodes: List<Node>, highlightColor: Color): AnnotatedString = buildAnnotatedString { nodes.forEach { appendInline(it, highlightColor) } }
-private fun AnnotatedString.Builder.appendInline(node: Node, highlightColor: Color) { when (node) { is TextNode -> append(node.text()); is Element -> when (node.tagName().lowercase(Locale.ROOT)) { "br" -> append("\n"); "b", "strong" -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { node.childNodes().forEach { appendInline(it, highlightColor) } }; "i", "em" -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { node.childNodes().forEach { appendInline(it, highlightColor) } }; "a", "mark" -> withStyle(SpanStyle(color = highlightColor, fontWeight = FontWeight.Bold, textDecoration = TextDecoration.Underline)) { node.childNodes().forEach { appendInline(it, highlightColor) } }; "span" -> { val style = node.attr("style").lowercase(Locale.ROOT); val color = extractCssColor(style); val bold = style.contains("font-weight:bold") || style.contains("font-weight:700") || style.contains("font-weight: 700") || color != null; if (color != null || bold) withStyle(SpanStyle(color = color ?: Color.Unspecified, fontWeight = if (bold) FontWeight.Bold else null)) { node.childNodes().forEach { appendInline(it, highlightColor) } } else node.childNodes().forEach { appendInline(it, highlightColor) } }; else -> node.childNodes().forEach { appendInline(it, highlightColor) } } } }
+private fun AnnotatedString.Builder.appendInline(node: Node, highlightColor: Color) { when (node) {
+    is TextNode -> append(node.text())
+    is Element -> when (node.tagName().lowercase(Locale.ROOT)) {
+        "br" -> append("\n")
+        "b", "strong" -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { node.childNodes().forEach { appendInline(it, highlightColor) } }
+        "i", "em" -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { node.childNodes().forEach { appendInline(it, highlightColor) } }
+        "a", "mark" -> withStyle(SpanStyle(color = highlightColor, fontWeight = FontWeight.Bold, textDecoration = TextDecoration.Underline)) { node.childNodes().forEach { appendInline(it, highlightColor) } }
+        "span" -> {
+            val style = node.attr("style").lowercase(Locale.ROOT)
+            val color = extractCssColor(style)
+            val bold = style.contains("font-weight:bold") || style.contains("font-weight:700") || style.contains("font-weight: 700") || color != null
+            if (color != null || bold) withStyle(SpanStyle(color = color ?: Color.Unspecified, fontWeight = if (bold) FontWeight.Bold else null)) { node.childNodes().forEach { appendInline(it, highlightColor) } } else node.childNodes().forEach { appendInline(it, highlightColor) }
+        }
+        else -> node.childNodes().forEach { appendInline(it, highlightColor) }
+    }
+} }
 private fun extractCssColor(style: String): Color? { val value = Regex("(?:^|;)\\s*color\\s*:\\s*([^;]+)").find(style)?.groupValues?.getOrNull(1)?.trim() ?: return null; return runCatching { android.graphics.Color.parseColor(value).let { Color(it) } }.getOrNull() }
 private fun publishedLabel(instant: Instant): String = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale("pt", "BR")).withZone(ZoneId.systemDefault()).format(instant)
