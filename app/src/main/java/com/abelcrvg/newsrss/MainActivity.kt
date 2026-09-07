@@ -36,6 +36,7 @@ import com.abelcrvg.newsrss.data.background.NewsRefreshScheduler
 import com.abelcrvg.newsrss.data.extraction.JsoupArticleExtractor
 import com.abelcrvg.newsrss.data.feed.SmartFeedReader
 import com.abelcrvg.newsrss.data.source.FeedCacheStore
+import com.abelcrvg.newsrss.data.remote.SupabaseNewsRealtime
 import com.abelcrvg.newsrss.data.source.ReadArticleStore
 import com.abelcrvg.newsrss.data.source.SavedArticleStore
 import com.abelcrvg.newsrss.data.source.SourceStore
