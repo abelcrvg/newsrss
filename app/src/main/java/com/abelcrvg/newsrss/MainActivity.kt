@@ -31,6 +31,7 @@ import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
 import com.abelcrvg.newsrss.core.model.FeedSource
 import com.abelcrvg.newsrss.core.model.NewsCategory
+import com.abelcrvg.newsrss.core.model.SourceLanguage
 import com.abelcrvg.newsrss.core.source.SourceRegistry
 import com.abelcrvg.newsrss.data.background.NewsRefreshScheduler
 import com.abelcrvg.newsrss.data.extraction.JsoupArticleExtractor
@@ -111,7 +112,7 @@ private fun NewsRSSApp() {
                 val result = SmartFeedReader().read(source)
                 if (result.isSuccess) {
                     var sourceItems = result.getOrElse { emptyList() }.map { it.copy(sourceId = source.id) }
-                    if (source.category == NewsCategory.ENGLISH && sourceItems.isNotEmpty()) {
+                    if (source.language == SourceLanguage.ENGLISH && sourceItems.isNotEmpty()) {
                         sourceItems = OnDeviceTranslator(context.applicationContext).translateFeedItems(sourceItems)
                     }
                     val newCount = sourceItems.count { knownUrls.add(it.url) }
@@ -142,7 +143,7 @@ private fun NewsRSSApp() {
         error = null
         scope.launch {
             JsoupArticleExtractor().extract(item.url).onSuccess { extracted ->
-                article = if (sources.firstOrNull { it.id == item.sourceId }?.category == NewsCategory.ENGLISH) OnDeviceTranslator(context.applicationContext).translateArticle(extracted) else extracted
+                article = if (sources.firstOrNull { it.id == item.sourceId }?.language == SourceLanguage.ENGLISH) OnDeviceTranslator(context.applicationContext).translateArticle(extracted) else extracted
                 article = article?.copy(publishedAt = article?.publishedAt ?: item.publishedAt)
                 opening = false
             }.onFailure { failure -> error = failure.message ?: "Não foi possível abrir a notícia."; opening = false }
