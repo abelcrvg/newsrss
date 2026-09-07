@@ -2,23 +2,18 @@ package com.abelcrvg.newsrss.core.model
 
 import java.net.URI
 
-/** A user-configured news source. Topic is inferred when the caller leaves it as the generic News category. */
+/** A user-configured news source. Topic is inferred automatically when the generic News category is used. */
 data class FeedSource(
     val id: String,
     val name: String,
     val siteUrl: String,
     val feedUrl: String? = null,
-    val category: NewsCategory = NewsCategory.NEWS,
+    var category: NewsCategory = NewsCategory.NEWS,
     val enabled: Boolean = true
 ) {
     init {
-        // Keep explicit non-generic choices, but automatically classify newly added generic sources.
         if (category == NewsCategory.NEWS) {
-            val inferred = inferSourceCategory(siteUrl)
-            if (inferred != NewsCategory.NEWS) {
-                // The immutable model cannot rewrite the constructor value; SourceStore also applies
-                // the same classifier when loading/saving, so persisted and newly created sources converge.
-            }
+            category = inferSourceCategory(siteUrl)
         }
     }
 }
