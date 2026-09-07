@@ -20,44 +20,26 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** Dedicated direct crawler for GE with bounded memory/network concurrency. */
 class GESiteCrawler {
     suspend fun crawl(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
             val base = source.siteUrl.trimEnd('/')
             val host = URI(base).host?.removePrefix("www.") ?: error("URL inválida")
             val candidates = LinkedHashMap<String, FeedItem>()
-
             crawlSection(base, base, host, source, candidates)
             crawlSection("$base/plantao/", base, host, source, candidates)
-
             val semaphore = Semaphore(ENRICH_CONCURRENCY)
             val enriched = ArrayList<FeedItem>(candidates.size)
-            // Do not create one Deferred per article. GE can expose a very large archive and
-            // thousands of Deferred objects alone can cause a heap spike on phones.
             candidates.values.toList().chunked(ENRICH_BATCH_SIZE).forEach { batch ->
-                enriched += coroutineScope {
-                    batch.map { item ->
-                        async(Dispatchers.IO) { semaphore.withPermit { enrich(item) } }
-                    }.awaitAll()
-                }
+                enriched += coroutineScope { batch.map { item -> async(Dispatchers.IO) { semaphore.withPermit { enrich(item) } } }.awaitAll() }
             }
-
-            enriched.distinctBy { it.url }
-                .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title.lowercase() })
+            enriched.distinctBy { it.url }.sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title.lowercase() })
         }
     }
 
-    private fun crawlSection(
-        startUrl: String,
-        base: String,
-        host: String,
-        source: FeedSource,
-        candidates: MutableMap<String, FeedItem>
-    ) {
+    private fun crawlSection(startUrl: String, base: String, host: String, source: FeedSource, candidates: MutableMap<String, FeedItem>) {
         val visited = HashSet<String>()
         var current: String? = startUrl
-
         while (current != null && visited.add(current)) {
             val document = runCatching { fetch(current!!) }.getOrNull() ?: break
             val before = candidates.size
@@ -68,14 +50,9 @@ class GESiteCrawler {
         }
     }
 
-    private fun fetch(url: String): Document = Jsoup.connect(url)
-        .userAgent(USER_AGENT)
-        .referrer("https://www.google.com/")
+    private fun fetch(url: String): Document = Jsoup.connect(url).userAgent(USER_AGENT).referrer("https://www.google.com/")
         .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8")
-        .header("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.7,en;q=0.5")
-        .timeout(TIMEOUT)
-        .followRedirects(true)
-        .get()
+        .header("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.7,en;q=0.5").timeout(TIMEOUT).followRedirects(true).get()
 
     private fun discoverNextPage(document: Document, base: String, host: String, currentUrl: String, visited: Set<String>): String? {
         val links = document.select("a[href]").mapNotNull { link ->
@@ -89,14 +66,14 @@ class GESiteCrawler {
             Triple(url, text, paginationNumber(path))
         }
         val currentNumber = paginationNumber(runCatching { URI(currentUrl).path.orEmpty() }.getOrDefault("")) ?: 1
-        val explicitNext = links.firstOrNull { (url, text, number) ->
-            url !in visited && (text.contains("próxima") || text.contains("proxima") || text == "next" || text == "›" || text == "»") &&
-                (number == null || number > currentNumber)
-        }?.first
-        if (explicitNext != null) return explicitNext
-        return links.map { it.first to it.third }
-            .filter { it.first !in visited && (it.second == null || it.second > currentNumber) }
-            .minByOrNull { it.second ?: Int.MAX_VALUE }?.first
+        links.firstOrNull { link ->
+            val n = link.third
+            link.first !in visited && (link.second.contains("próxima") || link.second.contains("proxima") || link.second == "next" || link.second == "›" || link.second == "»") && (n == null || n > currentNumber)
+        }?.first?.let { return it }
+        return links.mapNotNull { link ->
+            val n = link.third
+            if (link.first in visited || (n != null && n <= currentNumber)) null else link.first to (n ?: Int.MAX_VALUE)
+        }.minByOrNull { it.second }?.first
     }
 
     private fun paginationNumber(path: String): Int? = Regex("(?:pagina-|page/)(\\d+)", RegexOption.IGNORE_CASE).find(path)?.groupValues?.getOrNull(1)?.toIntOrNull()
@@ -112,7 +89,7 @@ class GESiteCrawler {
     }.distinctBy { it.url }
 
     private suspend fun enrich(item: FeedItem): FeedItem = withContext(Dispatchers.IO) {
-        runCatching { fetch(item.url).let { document -> item.copy(publishedAt = extractArticlePublishedDate(document) ?: item.publishedAt, imageUrl = extractArticleImage(document) ?: item.imageUrl, summary = extractArticleSummary(document) ?: item.summary) }.getOrElse { item }
+        runCatching { fetch(item.url) }.map { document -> item.copy(publishedAt = extractArticlePublishedDate(document) ?: item.publishedAt, imageUrl = extractArticleImage(document) ?: item.imageUrl, summary = extractArticleSummary(document) ?: item.summary) }.getOrElse { item }
     }
 
     private fun findContentContext(link: Element): Element? = link.closest("article") ?: link.closest("[class*=feed-post], [class*=feed-item], [class*=card], [class*=story], [class*=headline], [class*=noticia], [class*=materia], [class*=post], [class*=content]") ?: link.parent()
@@ -127,14 +104,5 @@ class GESiteCrawler {
     private fun extractArticlePublishedDate(document: Document): Instant? { val metadata = document.select("meta[property=article:published_time][content], meta[property=datePublished][content], meta[name=date][content], meta[itemprop=datePublished][content], time[itemprop=datePublished][datetime], time[datetime]").mapNotNull { it.attr("content").ifBlank { it.attr("datetime") }.takeIf(String::isNotBlank) }; metadata.asSequence().mapNotNull(::parseDate).firstOrNull()?.let { return it }; return document.select("script[type=application/ld+json]").asSequence().flatMap { DATE_PUBLISHED.findAll(it.data()).asSequence() }.mapNotNull { parseDate(it.groupValues[1]) }.firstOrNull() }
     private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf(String::isNotBlank)?.let { runCatching { Instant.parse(it) }.getOrNull() ?: runCatching { OffsetDateTime.parse(it).toInstant() }.getOrNull() ?: runCatching { ZonedDateTime.parse(it).toInstant() }.getOrNull() ?: runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull() ?: runCatching { LocalDateTime.parse(it, DateTimeFormatter.ISO_LOCAL_DATE_TIME).atZone(ZoneId.systemDefault()).toInstant() }.getOrNull() }
     private fun normalizeImageUrl(value: String, baseUri: String): String { val trimmed = value.trim().removeSurrounding("\""); if (trimmed.startsWith("//")) return "https:$trimmed"; return runCatching { URI(baseUri).resolve(trimmed).toString() }.getOrElse { trimmed } }
-
-    private companion object {
-        const val TIMEOUT = 15_000
-        const val ENRICH_CONCURRENCY = 2
-        const val ENRICH_BATCH_SIZE = 10
-        const val MIN_TITLE_LENGTH = 8
-        const val MAX_TITLE_LENGTH = 220
-        const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.3"
-        val DATE_PUBLISHED = Regex("""[\"']datePublished[\"']\s*:\s*[\"']([^\"']+)[\"']""", RegexOption.IGNORE_CASE)
-    }
+    private companion object { const val TIMEOUT = 15_000; const val ENRICH_CONCURRENCY = 2; const val ENRICH_BATCH_SIZE = 10; const val MIN_TITLE_LENGTH = 8; const val MAX_TITLE_LENGTH = 220; const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.3"; val DATE_PUBLISHED = Regex("""[\"']datePublished[\"']\s*:\s*[\"']([^\"']+)[\"']""", RegexOption.IGNORE_CASE) }
 }
