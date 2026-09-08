@@ -32,8 +32,6 @@ object SourceAnalyzer {
         val text = "$host $path"
 
         val category = when {
-            // Known football publishers must be classified as football even when
-            // the user adds their homepage instead of a football section URL.
             host == "skysports.com" || host.endsWith(".skysports.com") -> NewsCategory.FOOTBALL
             host == "espn.com.br" || host.endsWith(".espn.com.br") -> NewsCategory.FOOTBALL
             host == "ge.globo.com" || host.endsWith(".ge.globo.com") -> NewsCategory.FOOTBALL
@@ -42,6 +40,8 @@ object SourceAnalyzer {
             listOf("tech", "technology", "tecnologia").any(text::contains) -> NewsCategory.TECHNOLOGY
             listOf("science", "ciencia", "ciência").any(text::contains) -> NewsCategory.SCIENCE
             listOf("economy", "economia", "business", "finance").any(text::contains) -> NewsCategory.ECONOMY
+            host == "super.abril.com.br" || host.endsWith(".super.abril.com.br") -> NewsCategory.ENTERTAINMENT
+            listOf("entertainment", "entretenimento", "celebridades", "celebrity", "cultura").any(text::contains) -> NewsCategory.ENTERTAINMENT
             listOf("movies", "movie", "cinema", "filmes", "series", "tv").any(text::contains) -> NewsCategory.MOVIES
             listOf("world", "mundo", "international", "internacional").any(text::contains) -> NewsCategory.WORLD
             host == "theverge.com" || host.endsWith(".theverge.com") -> NewsCategory.TECHNOLOGY
@@ -51,7 +51,8 @@ object SourceAnalyzer {
         val language = when {
             host == "skysports.com" || host.endsWith(".skysports.com") -> SourceLanguage.ENGLISH
             host == "theverge.com" || host.endsWith(".theverge.com") -> SourceLanguage.ENGLISH
-            host == "espn.com.br" || host.endsWith(".com.br") -> SourceLanguage.PORTUGUESE
+            host == "espn.com.br" || host.endsWith(".espn.com.br") -> SourceLanguage.PORTUGUESE
+            host == "super.abril.com.br" || host.endsWith(".super.abril.com.br") -> SourceLanguage.PORTUGUESE
             host.endsWith(".br") -> SourceLanguage.PORTUGUESE
             else -> SourceLanguage.AUTO
         }
