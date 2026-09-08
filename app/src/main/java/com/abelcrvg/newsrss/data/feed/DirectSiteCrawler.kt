@@ -78,6 +78,7 @@ class DirectSiteCrawler(private val config: Config) {
     private fun imageOf(context: Element, base: String): String? {
         val candidates = context.select("img,source,noscript")
             .asSequence()
+            .filter(::usableImageElement)
             .flatMap { node ->
                 sequenceOf(
                     node.attr("src"), node.attr("data-src"), node.attr("data-lazy-src"),
@@ -93,6 +94,38 @@ class DirectSiteCrawler(private val config: Config) {
             .toList()
         return candidates.firstOrNull()
     }
+
+    private fun usableImageElement(node: Element): Boolean {
+        val attributes = buildString {
+            append(node.className()).append(' ').append(node.id()).append(' ')
+            append(node.attr("alt")).append(' ').append(node.attr("title")).append(' ')
+            append(node.attr("src")).append(' ').append(node.attr("data-src")).append(' ')
+            node.parents().take(4).forEach { append(it.className()).append(' ').append(it.id()).append(' ') }
+        }.lowercase()
+        val noise = listOf(
+            "avatar", "author", "profile", "user-photo", "user_photo", "headshot", "portrait",
+            "logo", "icon", "favicon", "sprite", "social", "share", "whatsapp", "twitter", "facebook",
+            "linkedin", "telegram", "instagram", "youtube", "tiktok", "qr-code", "qrcode", "tracking"
+        )
+        if (noise.any(attributes::contains)) return false
+        return hasMinimumImageSize(node)
+    }
+
+    private fun hasMinimumImageSize(node: Element): Boolean {
+        val width = dimension(node.attr("width"))
+        val height = dimension(node.attr("height"))
+        if (width != null && width < MIN_IMAGE_WIDTH) return false
+        if (height != null && height < MIN_IMAGE_HEIGHT) return false
+
+        val style = node.attr("style")
+        val styleWidth = Regex("(?:^|;)\\s*width\\s*:\\s*(\\d+)px", RegexOption.IGNORE_CASE).find(style)?.groupValues?.get(1)?.toIntOrNull()
+        val styleHeight = Regex("(?:^|;)\\s*height\\s*:\\s*(\\d+)px", RegexOption.IGNORE_CASE).find(style)?.groupValues?.get(1)?.toIntOrNull()
+        if (styleWidth != null && styleWidth < MIN_IMAGE_WIDTH) return false
+        if (styleHeight != null && styleHeight < MIN_IMAGE_HEIGHT) return false
+        return true
+    }
+
+    private fun dimension(value: String): Int? = value.trim().removeSuffix("px").toIntOrNull()
 
     private fun extractCssImages(style: String): Sequence<String> = Regex("url\\(\\s*['\\\"]?([^'\\\")]+)['\\\"]?\\s*\\)", RegexOption.IGNORE_CASE)
         .findAll(style).map { it.groupValues[1] }
@@ -132,10 +165,25 @@ class DirectSiteCrawler(private val config: Config) {
         runCatching { URI(base).resolve(value.trim()).toString() }.getOrNull()
             ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
 
-    private fun usableImage(url: String): Boolean = listOf(
-        "logo", "avatar", "author", "icon", "sprite", "pixel", "tracking", "placeholder",
-        "banner", "favicon", "1x1", "transparent", "data:image"
-    ).none(url.lowercase()::contains)
+    private fun usableImage(url: String): Boolean {
+        val lower = url.lowercase()
+        if (listOf(
+                "logo", "avatar", "author", "profile", "headshot", "portrait", "icon", "sprite", "pixel",
+                "tracking", "placeholder", "favicon", "1x1", "transparent", "whatsapp", "twitter", "facebook",
+                "linkedin", "telegram", "instagram", "youtube", "tiktok", "qrcode", "qr-code"
+            ).any(lower::contains)) return false
+        val dimensions = Regex("(?:^|[^0-9])([0-9]{2,4})[xX]([0-9]{2,4})(?:[^0-9]|$)").find(lower)
+        if (dimensions != null) {
+            val width = dimensions.groupValues[1].toIntOrNull() ?: return false
+            val height = dimensions.groupValues[2].toIntOrNull() ?: return false
+            if (width < MIN_IMAGE_WIDTH || height < MIN_IMAGE_HEIGHT) return false
+        }
+        val queryWidth = Regex("(?:[?&](?:w|width)=)(\\d{2,4})", RegexOption.IGNORE_CASE).find(lower)?.groupValues?.get(1)?.toIntOrNull()
+        val queryHeight = Regex("(?:[?&](?:h|height)=)(\\d{2,4})", RegexOption.IGNORE_CASE).find(lower)?.groupValues?.get(1)?.toIntOrNull()
+        if (queryWidth != null && queryWidth < MIN_IMAGE_WIDTH) return false
+        if (queryHeight != null && queryHeight < MIN_IMAGE_HEIGHT) return false
+        return true
+    }
 
     private fun stableId(source: String, url: String) = (source + url).hashCode().toUInt().toString(16)
 
@@ -143,6 +191,8 @@ class DirectSiteCrawler(private val config: Config) {
         private const val TIMEOUT = 12_000
         private const val MIN_TITLE = 12
         private const val MAX_TITLE = 240
+        private const val MIN_IMAGE_WIDTH = 240
+        private const val MIN_IMAGE_HEIGHT = 120
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.3"
     }
 }
