@@ -24,7 +24,7 @@ class SmartFeedReader(
 ) : FeedReader {
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         val host = runCatching { URI(source.siteUrl).host.orEmpty().removePrefix("www.").lowercase() }.getOrDefault("")
-        when {
+        val result = when {
             source.id == "g1" -> combineWithRss(
                 specialized = g1Crawler.crawl(source),
                 source = source,
@@ -54,7 +54,55 @@ class SmartFeedReader(
                 )
             else -> homepageCrawler.crawl(source)
         }
+
+        if (source.id == "trivela") filterTrivelaBettingContent(result) else result
     }
+
+    private fun filterTrivelaBettingContent(result: Result<List<FeedItem>>): Result<List<FeedItem>> =
+        result.map { items -> items.filterNot(::isBettingFocusedTrivelaArticle) }
+
+    /**
+     * Trivela also publishes betting/affiliate content. Keep football stories that merely
+     * mention a bookmaker, but remove stories whose title clearly makes betting the subject.
+     */
+    private fun isBettingFocusedTrivelaArticle(item: FeedItem): Boolean {
+        val title = normalize(item.title)
+        val summary = normalize(item.summary.orEmpty())
+
+        val strongTitleTerms = listOf(
+            "casa de apostas", "casas de apostas", "apostas esportivas", "aposta esportiva",
+            "apostadores", "apostador", "betting", "bookmaker", "odds", "cotacao das apostas",
+            "cotacoes das apostas", "palpites", "prognostico", "prognosticos", "bonus de aposta",
+            "bonus das casas", "melhores casas", "onde apostar", "como apostar", "cassino",
+            "casino", "bet365", "betano", "sportingbet", "superbet", "novibet", "kto",
+            "pixbet", "estrelabet"
+        )
+        if (strongTitleTerms.any(title::contains)) return true
+
+        val bettingSignals = listOf(
+            "apostas", "apostar", "apostadores", "odds", "betting", "bookmaker", "palpites",
+            "prognostico", "prognosticos", "casa de apostas", "casas de apostas", "cassino",
+            "casino", "bet365", "betano", "sportingbet", "superbet", "novibet", "kto",
+            "pixbet", "estrelabet", "bonus de aposta"
+        )
+        val signalCount = bettingSignals.count { summary.contains(it) }
+        return signalCount >= 2
+    }
+
+    private fun normalize(value: String): String =
+        value.lowercase()
+            .replace("á", "a")
+            .replace("à", "a")
+            .replace("ã", "a")
+            .replace("â", "a")
+            .replace("é", "e")
+            .replace("ê", "e")
+            .replace("í", "i")
+            .replace("ó", "o")
+            .replace("ô", "o")
+            .replace("õ", "o")
+            .replace("ú", "u")
+            .replace("ç", "c")
 
     private suspend fun fallbackToGeneric(specialized: Result<List<FeedItem>>, source: FeedSource): Result<List<FeedItem>> {
         if (specialized.isSuccess && specialized.getOrNull().orEmpty().isNotEmpty()) return specialized
@@ -88,7 +136,6 @@ class SmartFeedReader(
                 previous.copy(
                     title = previous.title.ifBlank { feedItem.title },
                     summary = previous.summary?.takeIf { it.isNotBlank() } ?: feedItem.summary,
-                    // RSS is the authoritative publication timestamp when the HTML card has none.
                     publishedAt = previous.publishedAt ?: feedItem.publishedAt,
                     imageUrl = previous.imageUrl?.takeIf { it.isNotBlank() } ?: feedItem.imageUrl
                 )
@@ -97,7 +144,6 @@ class SmartFeedReader(
 
         return Result.success(
             merged.values
-                // Source-neutral ordering: publication time first, source never participates in priority.
                 .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title.lowercase() })
                 .take(MAX_PUBLISHER_ITEMS)
         )
