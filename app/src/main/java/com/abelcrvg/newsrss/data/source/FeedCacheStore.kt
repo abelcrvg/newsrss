@@ -2,6 +2,7 @@ package com.abelcrvg.newsrss.data.source
 
 import android.content.Context
 import com.abelcrvg.newsrss.core.feed.FeedItem
+import com.abelcrvg.newsrss.core.media.ImageQuality
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
@@ -27,7 +28,7 @@ class FeedCacheStore(context: Context) {
                             url = o.getString("url"),
                             summary = o.optString("summary").takeIf(String::isNotBlank),
                             publishedAt = publishedAt,
-                            imageUrl = o.optString("imageUrl").takeIf(String::isNotBlank)
+                            imageUrl = ImageQuality.sanitize(o.optString("imageUrl"))
                         )
                     )
                 }
@@ -40,15 +41,17 @@ class FeedCacheStore(context: Context) {
         val merged = LinkedHashMap<String, FeedItem>()
         load().forEach { merged[it.url] = it }
         items.forEach { fresh ->
+            val cleanImage = ImageQuality.sanitize(fresh.imageUrl)
+            val sanitized = fresh.copy(imageUrl = cleanImage)
             val previous = merged[fresh.url]
-            merged[fresh.url] = if (previous == null) fresh else previous.copy(
-                id = fresh.id,
-                sourceId = fresh.sourceId,
-                title = fresh.title.ifBlank { previous.title },
-                url = fresh.url,
-                summary = fresh.summary?.takeIf { it.isNotBlank() } ?: previous.summary,
-                publishedAt = fresh.publishedAt ?: previous.publishedAt,
-                imageUrl = fresh.imageUrl?.takeIf { it.isNotBlank() } ?: previous.imageUrl
+            merged[fresh.url] = if (previous == null) sanitized else previous.copy(
+                id = sanitized.id,
+                sourceId = sanitized.sourceId,
+                title = sanitized.title.ifBlank { previous.title },
+                url = sanitized.url,
+                summary = sanitized.summary?.takeIf { it.isNotBlank() } ?: previous.summary,
+                publishedAt = sanitized.publishedAt ?: previous.publishedAt,
+                imageUrl = sanitized.imageUrl
             )
         }
         val ordered = merged.values.sortedWith(feedOrder())
