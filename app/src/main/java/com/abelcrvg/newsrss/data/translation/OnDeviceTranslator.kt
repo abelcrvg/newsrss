@@ -16,12 +16,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
  * English -> Brazilian Portuguese translation performed entirely on-device.
- *
- * ML Kit remains the translation engine, but the input/output is treated as an
- * editorial pipeline: entities and football expressions are protected, text is
- * translated in small contextual groups, recurring literal constructions are
- * normalized, and suspicious output is rejected instead of being shown as if it
- * were a good translation.
+ * ML Kit is wrapped by a small football-editorial layer that protects entities,
+ * translates related text together and rejects obvious machine-translation garbage.
  */
 class OnDeviceTranslator(_context: Context) {
     private val translator: Translator = Translation.getClient(
@@ -76,7 +72,6 @@ class OnDeviceTranslator(_context: Context) {
 
     private suspend fun translateBodyBlocks(blocks: List<ArticleBlock>): List<ArticleBlock> {
         if (blocks.isEmpty()) return blocks
-
         val result = blocks.toMutableList()
         val contextual = blocks.mapIndexedNotNull { index, block ->
             when (block) {
@@ -91,7 +86,6 @@ class OnDeviceTranslator(_context: Context) {
         while (cursor < contextual.size) {
             val window = ArrayList<ContextPart>()
             var length = 0
-
             while (cursor < contextual.size) {
                 val candidate = contextual[cursor]
                 val extra = candidate.text.length + MARKER_OVERHEAD
@@ -125,7 +119,11 @@ class OnDeviceTranslator(_context: Context) {
                     result[index] = block.copy(caption = caption, altText = alt)
                 }
                 is ArticleBlock.ListBlock -> {
-                    result[index] = block.copy(items = block.items.map { translateSingle(it) })
+                    val translatedItems = ArrayList<String>(block.items.size)
+                    for (item in block.items) {
+                        translatedItems += translateSingle(item)
+                    }
+                    result[index] = block.copy(items = translatedItems)
                 }
                 else -> Unit
             }
@@ -133,28 +131,29 @@ class OnDeviceTranslator(_context: Context) {
         return result
     }
 
-    /** Translate several related pieces together without losing their boundaries. */
     private suspend fun translateContext(parts: List<String>): List<String> {
         if (parts.isEmpty()) return emptyList()
+        val protected = parts.map { protectTerms(it) }
 
-        val protected = parts.map(::protectTerms)
-        val translated = if (protected.size == 1) {
-            listOf(translateProtected(protected[0]))
+        if (protected.size == 1) {
+            return listOf(translateProtected(protected[0], parts[0]))
+        }
+
+        val payload = protected.mapIndexed { index, part ->
+            "$MARKER$index$MARKER_END\n${part.text}"
+        }.joinToString("\n\n")
+
+        val contextualResult = runCatching { translateText(payload) }.getOrNull()
+        val parsed = contextualResult?.let { parseContextResult(it, parts.size) }
+
+        val translated = if (parsed != null && parsed.all { isAcceptableTranslation(parts[it.first], it.second) }) {
+            parsed.map { it.second }
         } else {
-            val payload = protected.mapIndexed { index, part ->
-                "$MARKER$index$MARKER_END\n${part.text}"
-            }.joinToString("\n\n")
-
-            val contextualResult = runCatching { translateText(payload) }.getOrNull()
-            val parsed = contextualResult?.let { parseContextResult(it, parts.size) }
-
-            if (parsed != null && parsed.all { isAcceptableTranslation(parts[it.first], it.second) }) {
-                parsed.map { it.second }
-            } else {
-                // Important: keep the protected text on fallback. The old implementation
-                // could fall back to the raw English text and lose entity protection.
-                protected.map(::translateProtected)
+            val fallback = ArrayList<String>(protected.size)
+            for (index in protected.indices) {
+                fallback += translateProtected(protected[index], parts[index])
             }
+            fallback
         }
 
         return translated.mapIndexed { index, value ->
@@ -164,29 +163,25 @@ class OnDeviceTranslator(_context: Context) {
         }
     }
 
-    private suspend fun translateProtected(part: ProtectedText): String {
+    private suspend fun translateProtected(part: ProtectedText, original: String): String {
         val translated = translateText(part.text)
-        return restoreTerms(normalizePortuguese(translated), part.replacements)
+        val restored = restoreTerms(translated, part.replacements)
+        val cleaned = normalizePortuguese(restored)
+        return if (isAcceptableTranslation(original, cleaned)) cleaned else original
     }
 
     private fun parseContextResult(text: String, expected: Int): List<Pair<Int, String>>? {
         val regex = Regex(
             "(?s)${Regex.escape(MARKER)}(\\d+)${Regex.escape(MARKER_END)}\\s*\\n(.*?)(?=\\n\\n${Regex.escape(MARKER)}\\d+${Regex.escape(MARKER_END)}\\s*\\n|$)"
         )
-        val parsed = regex.findAll(text)
-            .mapNotNull { match ->
-                val index = match.groupValues[1].toIntOrNull() ?: return@mapNotNull null
-                index to match.groupValues[2].trim()
-            }
-            .toList()
-
-        if (parsed.size != expected || parsed.map { it.first }.toSet() != (0 until expected).toSet()) {
-            return null
-        }
+        val parsed = regex.findAll(text).mapNotNull { match ->
+            val index = match.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+            index to match.groupValues[2].trim()
+        }.toList()
+        if (parsed.size != expected || parsed.map { it.first }.toSet() != (0 until expected).toSet()) return null
         return parsed.sortedBy { it.first }
     }
 
-    /** Protect names, competitions and football collocations before ML Kit sees them. */
     private fun protectTerms(text: String): ProtectedText {
         var result = text
         val replacements = linkedMapOf<String, String>()
@@ -199,8 +194,6 @@ class OnDeviceTranslator(_context: Context) {
                 "(?<![\\p{L}\\p{N}])${Regex.escape(term)}(?![\\p{L}\\p{N}])",
                 RegexOption.IGNORE_CASE
             )
-            if (!regex.containsMatchIn(result)) return@forEach
-
             result = regex.replace(result) { match ->
                 val token = "ZXNEWS${replacements.size}Q"
                 replacements[token] = match.value
@@ -215,61 +208,40 @@ class OnDeviceTranslator(_context: Context) {
         replacements.forEach { (token, original) ->
             result = result.replace(token, original, ignoreCase = true)
         }
-        // If ML Kit inserted spaces around a placeholder, remove only those spaces.
-        replacements.keys.forEach { token ->
-            result = result.replace(Regex("\\s+$token\\s+", RegexOption.IGNORE_CASE), token)
-        }
         return result
     }
 
-    /**
-     * Converts recurring literal English constructions into natural Brazilian
-     * football journalism. This runs after entity restoration so names remain intact.
-     */
     private fun normalizePortuguese(text: String): String {
         var result = text.trim()
-
         val replacements = listOf(
-            Regex("\\b(\u00e0s|no|em)\\s+([0-9]{1,2})º\\s+dia\\s+de\\s+([a-z\u00e1-\u00fa]+)\\b", RegexOption.IGNORE_CASE) to "$1 $2 de $3",
-            Regex("\\b(?:no|em)\\s+([0-9]{1,2})º\\s+dia\\s+de\\s+", RegexOption.IGNORE_CASE) to "em $1 de ",
             Regex("\\bvira\\s+(\\d{2})\\s+anos\\b", RegexOption.IGNORE_CASE) to "completa $1 anos",
             Regex("\\bvirou\\s+(\\d{2})\\s+anos\\b", RegexOption.IGNORE_CASE) to "completou $1 anos",
             Regex("\\bfez\\s+(\\d{2})\\s+anos\\b", RegexOption.IGNORE_CASE) to "completou $1 anos",
             Regex("\\bjogou\\s+todo\\s+o\\s+jogo\\b", RegexOption.IGNORE_CASE) to "jogou a partida inteira",
-            Regex("\\bjogou\\s+todo\\s+o\\s+jogo\\s+\\b", RegexOption.IGNORE_CASE) to "jogou a partida inteira",
             Regex("\\bjogou\\s+os\\s+90\\s+minutos\\s+completos\\b", RegexOption.IGNORE_CASE) to "jogou os 90 minutos",
             Regex("\\b90\\s+minutos\\s+completos\\b", RegexOption.IGNORE_CASE) to "90 minutos",
-            Regex("\\bperna\\s+de\\s+dist\\u00e2ncia\\b", RegexOption.IGNORE_CASE) to "vantagem",
-            Regex("\\bcomo\\s+uma\\s+decora\\u00e7\\u00e3o\\b", RegexOption.IGNORE_CASE) to "na vit\u00f3ria",
-            Regex("\\bdecurso\\s+de\\s+uma\\s+vit\u00f3ria\\b", RegexOption.IGNORE_CASE) to "durante a vit\u00f3ria",
-            Regex("\\bpartida\\s+como\\s+uma\\s+decora\\u00e7\\u00e3o\\b", RegexOption.IGNORE_CASE) to "partida na vit\u00f3ria",
-            Regex("\\bde\\s+trinta\\s+para\\s+", RegexOption.IGNORE_CASE) to "por 3 a 0 sobre ",
-            Regex("\\buma\\s+vit\u00f3ria\\s+de\\s+trinta\\s+para\\s+", RegexOption.IGNORE_CASE) to "uma vit\u00f3ria por 3 a 0 sobre ",
-            Regex("\\bjogou\\s+seu\\s+\u00faltimo\\s+jogo\\b", RegexOption.IGNORE_CASE) to "disputou sua \u00faltima partida",
-            Regex("\\bseu\\s+\u00faltimo\\s+jogo\\b", RegexOption.IGNORE_CASE) to "sua \u00faltima partida",
-            Regex("\\bdurou\\s+a\\s+dist\u00e2ncia\\b", RegexOption.IGNORE_CASE) to "tamb\u00e9m jogou",
-            Regex("\\bassistiu\\s+ao\\s+jogo\\b", RegexOption.IGNORE_CASE) to "acompanhou a partida",
-            Regex("\\bmercado\\s+de\\s+transfer\u00eancias\\b", RegexOption.IGNORE_CASE) to "mercado de transfer\u00eancias",
-            Regex("\\bjanela\\s+de\\s+transfer\u00eancias\\b", RegexOption.IGNORE_CASE) to "janela de transfer\u00eancias",
-            Regex("\\btreinador[- ]chefe\\b", RegexOption.IGNORE_CASE) to "t\u00e9cnico",
-            Regex("\\bhead\\s+coach\\b", RegexOption.IGNORE_CASE) to "t\u00e9cnico",
-            Regex("\\bmanager\\b", RegexOption.IGNORE_CASE) to "t\u00e9cnico",
-            Regex("\\bgerente\\b", RegexOption.IGNORE_CASE) to "t\u00e9cnico",
-            Regex("\\bline[- ]up\\b", RegexOption.IGNORE_CASE) to "escala\u00e7\u00e3o",
+            Regex("\\bperna\\s+de\\s+distância\\b", RegexOption.IGNORE_CASE) to "vantagem",
+            Regex("\\bcomo\\s+uma\\s+decoração\\b", RegexOption.IGNORE_CASE) to "na vitória",
+            Regex("\\bjogou\\s+seu\\s+último\\s+jogo\\b", RegexOption.IGNORE_CASE) to "disputou sua última partida",
+            Regex("\\bseu\\s+último\\s+jogo\\b", RegexOption.IGNORE_CASE) to "sua última partida",
+            Regex("\\bdurou\\s+a\\s+distância\\b", RegexOption.IGNORE_CASE) to "também jogou",
+            Regex("\\btreinador[- ]chefe\\b", RegexOption.IGNORE_CASE) to "técnico",
+            Regex("\\bhead\\s+coach\\b", RegexOption.IGNORE_CASE) to "técnico",
+            Regex("\\bmanager\\b", RegexOption.IGNORE_CASE) to "técnico",
+            Regex("\\bgerente\\b", RegexOption.IGNORE_CASE) to "técnico",
+            Regex("\\bline[- ]up\\b", RegexOption.IGNORE_CASE) to "escalação",
             Regex("\\bstarting\\s+XI\\b", RegexOption.IGNORE_CASE) to "time titular",
             Regex("\\bstarting\\s+lineup\\b", RegexOption.IGNORE_CASE) to "time titular",
-            Regex("\\bfull[- ]time\\b", RegexOption.IGNORE_CASE) to "fim de jogo",
-            Regex("\\bhalf[- ]time\\b", RegexOption.IGNORE_CASE) to "intervalo",
             Regex("\\bclean\\s+sheet\\b", RegexOption.IGNORE_CASE) to "sem sofrer gols",
             Regex("\\bown\\s+goal\\b", RegexOption.IGNORE_CASE) to "gol contra",
-            Regex("\\bpenalty\\s+shootout\\b", RegexOption.IGNORE_CASE) to "disputa de p\u00eanaltis",
-            Regex("\\btitle\\s+race\\b", RegexOption.IGNORE_CASE) to "disputa pelo t\u00edtulo",
+            Regex("\\bpenalty\\s+shootout\\b", RegexOption.IGNORE_CASE) to "disputa de pênaltis",
+            Regex("\\btitle\\s+race\\b", RegexOption.IGNORE_CASE) to "disputa pelo título",
             Regex("\\brelegation\\s+battle\\b", RegexOption.IGNORE_CASE) to "luta contra o rebaixamento",
             Regex("\\bmatchday\\b", RegexOption.IGNORE_CASE) to "rodada",
             Regex("\\bfixture[s]?\\b", RegexOption.IGNORE_CASE) to "partida",
             Regex("\\bfree\\s+agent\\b", RegexOption.IGNORE_CASE) to "jogador livre",
-            Regex("\\bloan\\s+(?:deal|move)\\b", RegexOption.IGNORE_CASE) to "empr\u00e9stimo",
-            Regex("\\bknockout\\s+stage\\b", RegexOption.IGNORE_CASE) to "fase eliminat\u00f3ria",
+            Regex("\\bloan\\s+(?:deal|move)\\b", RegexOption.IGNORE_CASE) to "empréstimo",
+            Regex("\\bknockout\\s+stage\\b", RegexOption.IGNORE_CASE) to "fase eliminatória",
             Regex("\\bgroup\\s+stage\\b", RegexOption.IGNORE_CASE) to "fase de grupos",
             Regex("\\bquarter[- ]final[s]?\\b", RegexOption.IGNORE_CASE) to "quartas de final",
             Regex("\\bsemi[- ]final[s]?\\b", RegexOption.IGNORE_CASE) to "semifinal",
@@ -281,61 +253,27 @@ class OnDeviceTranslator(_context: Context) {
             Regex("\\breportedly\\b", RegexOption.IGNORE_CASE) to "segundo relatos",
             Regex("\\bin\\s+a\\s+statement\\b", RegexOption.IGNORE_CASE) to "em comunicado",
             Regex("\\baccording\\s+to\\s+reports\\b", RegexOption.IGNORE_CASE) to "segundo relatos",
-            Regex("\\bhas\\s+been\\s+ruled\\s+out\\b", RegexOption.IGNORE_CASE) to "est\u00e1 fora",
+            Regex("\\bhas\\s+been\\s+ruled\\s+out\\b", RegexOption.IGNORE_CASE) to "está fora",
             Regex("\\bruled\\s+out\\b", RegexOption.IGNORE_CASE) to "fora",
-            Regex("\\bwill\\s+miss\\s+the\\s+match\\b", RegexOption.IGNORE_CASE) to "vai desfalcar o time",
             Regex("\\bback\\s+in\\s+training\\b", RegexOption.IGNORE_CASE) to "de volta aos treinos",
             Regex("\\btraining\\s+session\\b", RegexOption.IGNORE_CASE) to "treino",
-            Regex("\\bmedical\\s+(?:tests|examination)\\b", RegexOption.IGNORE_CASE) to "exames m\u00e9dicos",
-            Regex("\\bdeal\\s+agreed\\b", RegexOption.IGNORE_CASE) to "acordo fechado",
-            Regex("\\bcontract\\s+extension\\b", RegexOption.IGNORE_CASE) to "renova\u00e7\u00e3o de contrato"
+            Regex("\\bmedical\\s+(?:tests|examination)\\b", RegexOption.IGNORE_CASE) to "exames médicos",
+            Regex("\\bcontract\\s+extension\\b", RegexOption.IGNORE_CASE) to "renovação de contrato"
         )
-
-        replacements.forEach { (pattern, replacement) ->
-            result = pattern.replace(result, replacement)
-        }
-
-        // Normalize common ML Kit punctuation/spacing artifacts.
-        result = result
-            .replace(Regex("\\s+([,.;:!?])"), "$1")
-            .replace(Regex("([.!?])([A-Za-z\u00c0-\u00ff])"), "$1 $2")
-            .replace(Regex(" {2,}"), " ")
-            .replace(Regex("\\s+\\n"), "\\n")
-            .replace(Regex("\\n\\s+"), "\\n")
-            .trim()
-
-        return result
+        replacements.forEach { (pattern, replacement) -> result = pattern.replace(result, replacement) }
+        return result.replace(Regex("\\s+([,.;:!?])"), "$1").replace(Regex(" {2,}"), " ").trim()
     }
 
-    /** Reject obvious garbage instead of silently presenting a broken translation. */
     private fun isAcceptableTranslation(original: String, translated: String): Boolean {
         if (original.isBlank()) return true
         if (translated.isBlank()) return false
-        if (translated.contains("ZXNEWS", ignoreCase = true)) return false
-        if (translated.contains("###NEWSRSS", ignoreCase = true)) return false
-
-        val suspicious = listOf(
-            "perna de distância",
-            "oitavo dia de",
-            "décima primeira hora",
-            "como uma decoração",
-            "jogou todo o jogo",
-            "vira ",
-            "durou a distância"
-        )
+        if (translated.contains("ZXNEWS", ignoreCase = true) || translated.contains("ZZNEWSBLOCK", ignoreCase = true)) return false
+        val suspicious = listOf("perna de distância", "oitavo dia de", "como uma decoração", "jogou todo o jogo", "durou a distância")
         if (suspicious.any { translated.contains(it, ignoreCase = true) }) return false
-
         val sourceWords = original.trim().split(Regex("\\s+")).size
         val targetWords = translated.trim().split(Regex("\\s+")).size
         if (sourceWords >= 12 && targetWords < (sourceWords * 0.28).toInt()) return false
         if (sourceWords >= 20 && targetWords > sourceWords * 2.8) return false
-
-        // ML Kit occasionally returns the English input almost unchanged. A few
-        // preserved proper nouns are expected, but a long identical sentence is not.
-        val normalizedSource = original.lowercase().replace(Regex("[^\\p{L}\\p{N} ]"), "").trim()
-        val normalizedTarget = translated.lowercase().replace(Regex("[^\\p{L}\\p{N} ]"), "").trim()
-        if (normalizedSource.length >= 60 && normalizedSource == normalizedTarget) return false
-
         return true
     }
 
@@ -343,8 +281,7 @@ class OnDeviceTranslator(_context: Context) {
         if (text.isBlank() || text.trim().length < 3) return text
         return try {
             val protected = protectTerms(text)
-            val translated = translateProtected(protected)
-            if (isAcceptableTranslation(text, translated)) translated else text
+            translateProtected(protected, text)
         } catch (_: Exception) {
             text
         }
@@ -392,19 +329,14 @@ class OnDeviceTranslator(_context: Context) {
             "came off the bench", "starting XI", "starting lineup", "clean sheet",
             "title race", "relegation battle", "transfer window", "transfer market",
             "loan deal", "loan move", "free agent", "head coach", "matchday",
-            "knockout stage", "group stage", "quarter-final", "semi-final", "top four",
-            "Premier League", "Champions League", "Europa League", "Europa Conference League",
-            "FA Cup", "Carabao Cup", "Club World Cup", "World Cup", "World Cup 2026",
-            "Copa Libertadores", "Copa Sudamericana", "Brasileirão", "Brazilian Serie A",
-            "La Liga", "Bundesliga", "Ligue 1", "MLS", "Ballon d'Or", "Golden Boot"
+            "knockout stage", "group stage", "quarter-final", "semi-final", "top four"
         )
 
         val COMPETITIONS = setOf(
             "Premier League", "Champions League", "UEFA Champions League", "Europa League",
             "Europa Conference League", "FA Cup", "Carabao Cup", "Club World Cup", "World Cup",
             "Copa Libertadores", "Copa Sudamericana", "Brasileirão", "Brazilian Serie A",
-            "Serie A", "Serie B", "La Liga", "Bundesliga", "Ligue 1", "MLS", "FIFA", "UEFA",
-            "CONMEBOL", "PFA", "FIFPro"
+            "Serie A", "Serie B", "La Liga", "Bundesliga", "Ligue 1", "MLS", "FIFA", "UEFA", "CONMEBOL"
         )
 
         val PROPER_NAMES = setOf(
