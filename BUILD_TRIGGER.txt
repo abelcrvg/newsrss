@@ -1,1 +1,1 @@
-Validation trigger for the repaired MainActivity and G1 duplicate-content fix.
+Validation trigger for mixed chronological feeds and ESPN/Sky image metadata.
