@@ -17,15 +17,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 
-/**
- * English -> Brazilian Portuguese translation for English sources, entirely on-device.
- *
- * The important difference from the old implementation is that article paragraphs are
- * no longer translated one-by-one. Consecutive editorial blocks are sent together in
- * small context windows, so the model can use the surrounding sentences to resolve
- * pronouns, verb tense and ambiguous words. Translation is also serialized through one
- * Translator instance instead of firing dozens of concurrent requests at the same model.
- */
+/** English -> Brazilian Portuguese translation for English sources, entirely on-device. */
 class OnDeviceTranslator(context: Context) {
     private val translator: Translator = Translation.getClient(
         TranslatorOptions.Builder()
@@ -44,9 +36,12 @@ class OnDeviceTranslator(context: Context) {
                     item.summary?.takeIf { it.isNotBlank() }?.let(::add)
                 }
                 val translated = translateContext(parts)
+                val originalSummary = item.summary
                 item.copy(
                     title = translated.getOrElse(0) { item.title },
-                    summary = item.summary?.let { translated.getOrElse(1) { it } }
+                    summary = originalSummary?.let { original ->
+                        translated.getOrElse(1) { original }
+                    }
                 )
             }
         } catch (_: Exception) {
@@ -59,24 +54,18 @@ class OnDeviceTranslator(context: Context) {
     suspend fun translateArticle(article: Article): Article {
         return try {
             ensureModel()
-
-            // Keep the headline and deck together so terms in the headline can be
-            // disambiguated by the subtitle/deck instead of being translated literally.
             val headerParts = buildList {
                 add(article.title)
                 article.subtitle?.takeIf { it.isNotBlank() }?.let(::add)
             }
             val translatedHeader = translateContext(headerParts)
-
-            // Translate the body in contextual windows. Images are not textual context,
-            // while paragraphs/headings/quotes are. Lists are kept separate to preserve
-            // their item boundaries exactly.
             val translatedBlocks = translateBodyBlocks(article.blocks)
-
+            val originalSubtitle = article.subtitle
             article.copy(
                 title = translatedHeader.getOrElse(0) { article.title },
-                subtitle = article.subtitle?.let { translatedHeader.getOrElse(1) { it } },
-                // Proper names should never be machine-translated as if they were prose.
+                subtitle = originalSubtitle?.let { original ->
+                    translatedHeader.getOrElse(1) { original }
+                },
                 author = article.author,
                 blocks = translatedBlocks
             )
@@ -89,7 +78,6 @@ class OnDeviceTranslator(context: Context) {
 
     private suspend fun translateBodyBlocks(blocks: List<ArticleBlock>): List<ArticleBlock> {
         if (blocks.isEmpty()) return blocks
-
         val result = blocks.toMutableList()
         val contextual = blocks.mapIndexedNotNull { index, block ->
             when (block) {
@@ -115,39 +103,20 @@ class OnDeviceTranslator(context: Context) {
             }
 
             val translated = translateContext(window.map { it.text })
-            if (translated.size == window.size) {
-                window.forEachIndexed { position, part ->
-                    val translatedText = translated[position]
-                    result[part.index] = when (val block = result[part.index]) {
-                        is ArticleBlock.Paragraph -> block.copy(
-                            text = AnnotatedString(translatedText),
-                            inlineHtml = block.inlineHtml?.let { translateInlineHtml(translatedText, it) }
-                        )
-                        is ArticleBlock.Heading -> block.copy(text = translatedText)
-                        is ArticleBlock.Quote -> block.copy(text = translatedText)
-                        else -> block
-                    }
-                }
-            } else {
-                // A malformed marker response must never destroy the article. Fall back
-                // to individual translation for just this window.
-                window.forEach { part ->
-                    val translatedText = translateText(part.text)
-                    result[part.index] = when (val block = result[part.index]) {
-                        is ArticleBlock.Paragraph -> block.copy(
-                            text = AnnotatedString(translatedText),
-                            inlineHtml = block.inlineHtml?.let { translateInlineHtml(translatedText, it) }
-                        )
-                        is ArticleBlock.Heading -> block.copy(text = translatedText)
-                        is ArticleBlock.Quote -> block.copy(text = translatedText)
-                        else -> block
-                    }
+            window.forEachIndexed { position, part ->
+                val translatedText = translated.getOrElse(position) { part.text }
+                result[part.index] = when (val block = result[part.index]) {
+                    is ArticleBlock.Paragraph -> block.copy(
+                        text = AnnotatedString(translatedText),
+                        inlineHtml = block.inlineHtml
+                    )
+                    is ArticleBlock.Heading -> block.copy(text = translatedText)
+                    is ArticleBlock.Quote -> block.copy(text = translatedText)
+                    else -> block
                 }
             }
         }
 
-        // Captions, alt text and list items are intentionally translated separately:
-        // their boundaries are meaningful UI structure and should not be merged.
         blocks.forEachIndexed { index, block ->
             when (block) {
                 is ArticleBlock.Image -> result[index] = block.copy(
@@ -160,7 +129,6 @@ class OnDeviceTranslator(context: Context) {
                 else -> Unit
             }
         }
-
         return result
     }
 
@@ -171,7 +139,6 @@ class OnDeviceTranslator(context: Context) {
         val payload = parts.mapIndexed { index, text ->
             "$MARKER$index]\n$text"
         }.joinToString("\n\n")
-
         val translated = runCatching { translateText(payload) }.getOrElse {
             return parts.map { translateText(it) }
         }
@@ -182,7 +149,6 @@ class OnDeviceTranslator(context: Context) {
         val parsed = regex.findAll(translated).associate { match ->
             match.groupValues[1].toInt() to match.groupValues[2].trim()
         }
-
         return if (parsed.size == parts.size && parsed.keys == parts.indices.toSet()) {
             parts.indices.map { parsed[it].orEmpty() }
         } else {
@@ -195,24 +161,6 @@ class OnDeviceTranslator(context: Context) {
             translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
                 .addOnSuccessListener { continuation.resume(Unit) }
                 .addOnFailureListener { continuation.resumeWithException(it) }
-        }
-    }
-
-    private suspend fun translateInlineHtml(translatedText: String, html: String): String {
-        // Keep the original HTML structure. The visible paragraph has already been
-        // translated with context; here only translate text nodes that are not represented
-        // by the normalized paragraph text, such as linked/strong fragments.
-        val body = Jsoup.parseBodyFragment(html).body()
-        translateTextNodes(body)
-        return body.html()
-    }
-
-    private suspend fun translateTextNodes(node: Node) {
-        node.childNodes().forEach { child ->
-            when (child) {
-                is TextNode -> child.text(translateText(child.text()))
-                else -> translateTextNodes(child)
-            }
         }
     }
 
