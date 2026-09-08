@@ -6,7 +6,7 @@ import com.abelcrvg.newsrss.core.feed.FeedItem
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
 import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.translate.TranslateLanguage
 import com.google.mlkit.translate.Translation
 import com.google.mlkit.translate.Translator
 import com.google.mlkit.translate.TranslatorOptions
@@ -35,8 +35,8 @@ class OnDeviceTranslator(_context: Context) {
                 val translated = translateContext(parts)
                 val originalSummary = item.summary
                 item.copy(
-                    title = translated.getOrElse(0) { item.title },
-                    summary = originalSummary?.let { original -> translated.getOrElse(1) { original } }
+                    title = translated.getOrNull(0) ?: item.title,
+                    summary = originalSummary?.let { original -> translated.getOrNull(1) ?: original }
                 )
             }
         } catch (_: Exception) {
@@ -57,8 +57,8 @@ class OnDeviceTranslator(_context: Context) {
             val translatedBlocks = translateBodyBlocks(article.blocks)
             val originalSubtitle = article.subtitle
             article.copy(
-                title = translatedHeader.getOrElse(0) { article.title },
-                subtitle = originalSubtitle?.let { original -> translatedHeader.getOrElse(1) { original } },
+                title = translatedHeader.getOrNull(0) ?: article.title,
+                subtitle = originalSubtitle?.let { original -> translatedHeader.getOrNull(1) ?: original },
                 author = article.author,
                 blocks = translatedBlocks
             )
@@ -96,12 +96,10 @@ class OnDeviceTranslator(_context: Context) {
             }
             val translated = translateContext(window.map { it.text })
             window.forEachIndexed { position, part ->
-                val translatedText = translated.getOrElse(position) { part.text }
+                val translatedText = translated.getOrNull(position) ?: part.text
                 result[part.index] = when (val block = result[part.index]) {
                     is ArticleBlock.Paragraph -> block.copy(
                         text = AnnotatedString(translatedText),
-                        // The original HTML contains English text. Keeping it would make
-                        // ReaderContent render the untranslated HTML instead of this text.
                         inlineHtml = null
                     )
                     is ArticleBlock.Heading -> block.copy(text = translatedText)
