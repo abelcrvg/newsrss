@@ -29,9 +29,6 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
 
             var blocks: List<ArticleBlock>
             if (theVerge) {
-                // The Verge has a known article-body component. Do not run the generic
-                // candidate scorer here: <main>, <article> and generic divs also contain
-                // recommendation cards, promos and unrelated images.
                 blocks = extractTheVergeBlocks(document)
             } else {
                 blocks = buildContentCandidates(document, false, g1).sortedByDescending(::score)
@@ -67,18 +64,12 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun isGe(url: String) = URI(url).host.orEmpty().lowercase().removePrefix("www.") == "ge.globo.com"
     private fun isG1(url: String) = URI(url).host.orEmpty().lowercase().removePrefix("www.").endsWith("g1.globo.com")
 
-    /** Extract only The Verge's article-body components; never fall back to page-wide divs. */
     private fun extractTheVergeBlocks(document: org.jsoup.nodes.Document): List<ArticleBlock> = buildList {
         document.select(".duet--article--article-body-component").forEach { component ->
             extractTheVergeComponent(component).forEach { block -> if (block !in this) add(block) }
         }
     }
 
-    /**
-     * A body component may contain a paragraph, heading, quote, list or figure.
-     * Images are accepted only from figures/pictures that live inside the component,
-     * preventing recommendation, author, social and decorative images from leaking in.
-     */
     private fun extractTheVergeComponent(component: Element): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
         component.select("p,h2,h3,h4,blockquote,ul,ol,figure").forEach { element ->
@@ -92,9 +83,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
                 }
                 "figure" -> {
                     val image = element.selectFirst("img")
-                    if (image != null && isTheVergeContentFigure(element)) {
-                        addImage(result, image, element.selectFirst("figcaption")?.text())
-                    }
+                    if (image != null && isTheVergeContentFigure(element)) addImage(result, image, element.selectFirst("figcaption")?.text())
                 }
             }
         }
@@ -106,10 +95,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             append(figure.className()).append(' ').append(figure.id()).append(' ')
             figure.parents().take(4).forEach { append(it.className()).append(' ').append(it.id()).append(' ') }
         }.lowercase()
-        val noise = listOf(
-            "related", "recommend", "newsletter", "promo", "advert", "ad-", "social", "share",
-            "author", "avatar", "logo", "header", "footer", "sidebar", "commerce", "product-card"
-        )
+        val noise = listOf("related", "recommend", "newsletter", "promo", "advert", "ad-", "social", "share", "author", "avatar", "logo", "header", "footer", "sidebar", "commerce", "product-card")
         return noise.none(classes::contains)
     }
 
@@ -139,8 +125,10 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun score(element: Element): Int = element.text().length + element.select("p").size * 260 + element.select("h2,h3,h4").size * 80 + element.select("img").size * 25 - element.select("a").text().length / 3
 
     private fun extractBlocks(root: Element, minParagraphLength: Int, ge: Boolean): List<ArticleBlock> {
+        val cleanRoot = root.clone()
+        removeNoiseFromRoot(cleanRoot)
         val result = mutableListOf<ArticleBlock>()
-        root.select("p,h2,h3,h4,blockquote,ul,ol,figure,img").forEach { element ->
+        cleanRoot.select("p,h2,h3,h4,blockquote,ul,ol,figure,img").forEach { element ->
             when (element.tagName()) {
                 "p" -> element.text().trim().takeIf { it.length >= minParagraphLength }?.let { result.add(ArticleBlock.Paragraph(it, sanitizeInlineHtml(element))) }
                 "h2","h3","h4" -> element.text().trim().takeIf(String::isNotBlank)?.let { result.add(ArticleBlock.Heading(it, element.tagName().drop(1).toInt())) }
@@ -153,13 +141,17 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         return result.distinct()
     }
 
+    private fun removeNoiseFromRoot(root: Element) {
+        root.select("script,style,noscript,iframe,canvas,svg,form,nav,footer,header,aside,[role=navigation],[role=banner],[role=contentinfo],.ad,.ads,.advert,.advertisement,.social,.share,.comments,.comment,.related,.recommendations,.recommended,.newsletter,.cookie,.cookies,.popup,.modal,.paywall,.login,.subscription").remove()
+        root.select("a[href*='facebook.com'],a[href*='instagram.com'],a[href*='youtube.com'],a[href*='whatsapp'],a[href*='twitter.com'],a[href*='x.com'],a[href*='threads.net'],a[href*='tiktok.com'],a[href*='news.google.com'],a[href*='maps.google.com']").remove()
+    }
+
     private fun extractJsonLdArticleBody(document: org.jsoup.nodes.Document, ge: Boolean): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
         document.select("script[type=application/ld+json]").forEach { script ->
             val raw = script.data()
             val match = Regex("""[\"']articleBody[\"']\s*:\s*[\"']((?:\\.|[^\"'])*)[\"']""", RegexOption.DOT_MATCHES_ALL).find(raw) ?: return@forEach
-            val body = match.groupValues[1]
-                .replace("\\n", "\n").replace("\\r", "\r").replace("\\\"", "\"").replace("\\/", "/")
+            val body = match.groupValues[1].replace("\\n", "\n").replace("\\r", "\r").replace("\\\"", "\"").replace("\\/", "/")
             body.split(Regex("\\n{2,}"))
                 .map { it.replace(Regex("\\s+"), " ").trim() }
                 .filter { it.length >= 3 }
@@ -209,7 +201,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun sanitizeInlineHtml(element: Element): String? {
         val copy = element.clone(); copy.select("script,style,iframe,svg,img,video,audio,object,embed").remove()
         copy.select("*").forEach { node ->
-            val attrs = node.attributes().asList().filter { it.key == "href" && node.tagName() == "a" || it.key == "title" || it.key == "style" }
+            val attrs = node.attributes().asList().filter { (it.key == "href" && node.tagName() == "a") || it.key == "title" || it.key == "style" }
             node.clearAttributes(); attrs.forEach { if (it.key == "style") sanitizeStyle(it.value).takeIf(String::isNotBlank)?.let { v -> node.attr("style", v) } else node.attr(it.key, it.value) }
         }
         return copy.html().trim().takeIf { it.isNotBlank() && it != copy.text() }
@@ -217,9 +209,15 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun sanitizeStyle(style: String) = style.split(';').mapNotNull { declaration -> val p = declaration.split(':', limit = 2); if (p.size != 2) null else { val property = p[0].trim().lowercase(); val value = p[1].trim(); if (property in setOf("color","font-weight") && value.isNotBlank() && value.length <= 80 && !value.contains('{') && !value.contains('}')) "$property:$value" else null } }.joinToString(";")
 
     private fun isNoiseImage(image: Element, ge: Boolean): Boolean {
-        if (!ge) return false
-        val attributes = buildString { append(image.className()).append(' ').append(image.id()).append(' ').append(image.attr("alt")).append(' ').append(image.attr("title")).append(' ').append(image.attr("src")).append(' '); image.parents().take(5).forEach { append(it.className()).append(' ').append(it.id()).append(' ') } }.lowercase()
-        return listOf("escudo","escudos","badge","club-logo","club_logo","team-logo","team_logo","team-badge","team_badge","crest","club-badge","club_badge","logo-time","logo time","abreviacao","abreviação","brasao","brasão","shield").any(attributes::contains)
+        val attributes = buildString {
+            append(image.className()).append(' ').append(image.id()).append(' ').append(image.attr("alt")).append(' ').append(image.attr("title")).append(' ').append(image.attr("src')).append(' ')
+            image.parents().take(6).forEach { append(it.className()).append(' ').append(it.id()).append(' ').append(it.attr("aria-label")).append(' ') }
+        }.lowercase()
+        val url = listOf("src", "data-src", "data-lazy-src", "data-original", "data-image", "data-image-url", "data-url", "data-thumb").asSequence().map { image.attr(it) }.firstOrNull { it.isNotBlank() }.orEmpty().lowercase()
+        val socialNoise = listOf("whatsapp", "facebook", "instagram", "youtube", "twitter", "x.com", "threads", "tiktok", "google-news", "google news", "google-maps", "google maps", "social", "share", "compartilhar", "redes-sociais", "redes sociais")
+        val genericNoise = listOf("logo", "avatar", "icon", "favicon", "sprite", "placeholder", "tracking", "pixel", "1x1", "author", "profile", "badge")
+        val footballNoise = listOf("escudo","escudos","club-logo","club_logo","team-logo","team_logo","team-badge","team_badge","crest","club-badge","club_badge","logo-time","logo time","abreviacao","abreviação","brasao","brasão","shield")
+        return socialNoise.any { it in attributes || it in url } || genericNoise.any { it in attributes || it in url } || (ge && footballNoise.any { it in attributes })
     }
     private fun addImage(result: MutableList<ArticleBlock>, image: Element, caption: String?) {
         val src = firstNonBlank(image.absUrl("src"), image.absUrl("data-src"), image.absUrl("data-lazy-src"), image.absUrl("data-original"), image.absUrl("data-image"), image.absUrl("data-lazy"), image.absUrl("data-flickity-lazyload"), image.absUrl("data-original-src"), image.absUrl("data-image-url"), image.absUrl("data-url"), image.absUrl("data-thumb")) ?: image.attr("srcset").split(',').firstOrNull()?.trim()?.split(Regex("\\s+"))?.firstOrNull()
@@ -248,6 +246,6 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         const val MIN_CONTENT_LENGTH = 180
         const val MIN_FALLBACK_LENGTH = 80
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36 NewsRSS/0.3"
-        val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
+        val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\s*\\\"([^\\\"]+)\\\"")
     }
 }
