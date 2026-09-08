@@ -7,18 +7,15 @@ import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.Translator
-import com.google.mlkit.nl.translate.TranslatorOptions
-import org.jsoup.Jsoup
-import org.jsoup.nodes.Node
-import org.jsoup.nodes.TextNode
+import com.google.mlkit.translate.Translation
+import com.google.mlkit.translate.Translator
+import com.google.mlkit.translate.TranslatorOptions
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /** English -> Brazilian Portuguese translation for English sources, entirely on-device. */
-class OnDeviceTranslator(context: Context) {
+class OnDeviceTranslator(_context: Context) {
     private val translator: Translator = Translation.getClient(
         TranslatorOptions.Builder()
             .setSourceLanguage(TranslateLanguage.ENGLISH)
@@ -39,9 +36,7 @@ class OnDeviceTranslator(context: Context) {
                 val originalSummary = item.summary
                 item.copy(
                     title = translated.getOrElse(0) { item.title },
-                    summary = originalSummary?.let { original ->
-                        translated.getOrElse(1) { original }
-                    }
+                    summary = originalSummary?.let { original -> translated.getOrElse(1) { original } }
                 )
             }
         } catch (_: Exception) {
@@ -63,9 +58,7 @@ class OnDeviceTranslator(context: Context) {
             val originalSubtitle = article.subtitle
             article.copy(
                 title = translatedHeader.getOrElse(0) { article.title },
-                subtitle = originalSubtitle?.let { original ->
-                    translatedHeader.getOrElse(1) { original }
-                },
+                subtitle = originalSubtitle?.let { original -> translatedHeader.getOrElse(1) { original } },
                 author = article.author,
                 blocks = translatedBlocks
             )
@@ -101,14 +94,15 @@ class OnDeviceTranslator(context: Context) {
                 cursor++
                 if (length >= MAX_CONTEXT_CHARS) break
             }
-
             val translated = translateContext(window.map { it.text })
             window.forEachIndexed { position, part ->
                 val translatedText = translated.getOrElse(position) { part.text }
                 result[part.index] = when (val block = result[part.index]) {
                     is ArticleBlock.Paragraph -> block.copy(
                         text = AnnotatedString(translatedText),
-                        inlineHtml = block.inlineHtml
+                        // The original HTML contains English text. Keeping it would make
+                        // ReaderContent render the untranslated HTML instead of this text.
+                        inlineHtml = null
                     )
                     is ArticleBlock.Heading -> block.copy(text = translatedText)
                     is ArticleBlock.Quote -> block.copy(text = translatedText)
@@ -123,9 +117,7 @@ class OnDeviceTranslator(context: Context) {
                     caption = block.caption?.let { translateText(it) },
                     altText = block.altText?.let { translateText(it) }
                 )
-                is ArticleBlock.ListBlock -> result[index] = block.copy(
-                    items = block.items.map { translateText(it) }
-                )
+                is ArticleBlock.ListBlock -> result[index] = block.copy(items = block.items.map { translateText(it) })
                 else -> Unit
             }
         }
@@ -135,20 +127,12 @@ class OnDeviceTranslator(context: Context) {
     private suspend fun translateContext(parts: List<String>): List<String> {
         if (parts.isEmpty()) return emptyList()
         if (parts.size == 1) return listOf(translateText(parts[0]))
-
-        val payload = parts.mapIndexed { index, text ->
-            "$MARKER$index]\n$text"
-        }.joinToString("\n\n")
+        val payload = parts.mapIndexed { index, text -> "$MARKER$index]\n$text" }.joinToString("\n\n")
         val translated = runCatching { translateText(payload) }.getOrElse {
             return parts.map { translateText(it) }
         }
-
-        val regex = Regex(
-            "(?s)${Regex.escape(MARKER)}(\\d+)]\\s*\\n(.*?)(?=\\n\\n${Regex.escape(MARKER)}\\d+]\\s*\\n|$)"
-        )
-        val parsed = regex.findAll(translated).associate { match ->
-            match.groupValues[1].toInt() to match.groupValues[2].trim()
-        }
+        val regex = Regex("(?s)${Regex.escape(MARKER)}(\\d+)]\\s*\\n(.*?)(?=\\n\\n${Regex.escape(MARKER)}\\d+]\\s*\\n|$)")
+        val parsed = regex.findAll(translated).associate { match -> match.groupValues[1].toInt() to match.groupValues[2].trim() }
         return if (parsed.size == parts.size && parsed.keys == parts.indices.toSet()) {
             parts.indices.map { parsed[it].orEmpty() }
         } else {
