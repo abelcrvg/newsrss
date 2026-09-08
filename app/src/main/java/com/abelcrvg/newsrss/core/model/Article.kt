@@ -36,11 +36,7 @@ sealed interface ArticleBlock {
         val url: String,
         val caption: String? = null,
         val altText: String? = null
-    ) : ArticleBlock {
-        init {
-            require(url.isNotBlank()) { "Article image URL cannot be blank" }
-        }
-    }
+    ) : ArticleBlock
     data class Quote(val text: String, val author: String? = null) : ArticleBlock
     data class ListBlock(val items: List<String>, val ordered: Boolean = false) : ArticleBlock
 }
