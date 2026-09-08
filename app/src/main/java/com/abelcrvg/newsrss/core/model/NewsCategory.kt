@@ -6,6 +6,7 @@ enum class NewsCategory(val label: String) {
     TECHNOLOGY("Tecnologia"),
     GAMES("Jogos"),
     MOVIES("Filmes e séries"),
+    ENTERTAINMENT("Entretenimento"),
     ECONOMY("Economia"),
     SCIENCE("Ciência"),
     WORLD("Mundo"),
