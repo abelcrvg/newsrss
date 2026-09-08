@@ -32,6 +32,11 @@ object SourceAnalyzer {
         val text = "$host $path"
 
         val category = when {
+            // Known football publishers must be classified as football even when
+            // the user adds their homepage instead of a football section URL.
+            host == "skysports.com" || host.endsWith(".skysports.com") -> NewsCategory.FOOTBALL
+            host == "espn.com.br" || host.endsWith(".espn.com.br") -> NewsCategory.FOOTBALL
+            host == "ge.globo.com" || host.endsWith(".ge.globo.com") -> NewsCategory.FOOTBALL
             listOf("football", "futebol", "soccer", "premier-league", "brasileirao").any(text::contains) -> NewsCategory.FOOTBALL
             listOf("games", "gaming", "jogos", "voxel").any(text::contains) -> NewsCategory.GAMES
             listOf("tech", "technology", "tecnologia").any(text::contains) -> NewsCategory.TECHNOLOGY
