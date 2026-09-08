@@ -210,7 +210,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
 
     private fun isNoiseImage(image: Element, ge: Boolean): Boolean {
         val attributes = buildString {
-            append(image.className()).append(' ').append(image.id()).append(' ').append(image.attr("alt")).append(' ').append(image.attr("title")).append(' ').append(image.attr("src')).append(' ')
+            append(image.className()).append(' ').append(image.id()).append(' ').append(image.attr("alt")).append(' ').append(image.attr("title")).append(' ').append(image.attr("src")).append(' ')
             image.parents().take(6).forEach { append(it.className()).append(' ').append(it.id()).append(' ').append(it.attr("aria-label")).append(' ') }
         }.lowercase()
         val url = listOf("src", "data-src", "data-lazy-src", "data-original", "data-image", "data-image-url", "data-url", "data-thumb").asSequence().map { image.attr(it) }.firstOrNull { it.isNotBlank() }.orEmpty().lowercase()
