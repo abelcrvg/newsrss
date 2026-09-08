@@ -25,9 +25,17 @@ class SmartFeedReader(
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         val host = runCatching { URI(source.siteUrl).host.orEmpty().removePrefix("www.").lowercase() }.getOrDefault("")
         when {
-            source.id == "g1" -> g1Crawler.crawl(source)
+            source.id == "g1" -> combineWithRss(
+                specialized = g1Crawler.crawl(source),
+                source = source,
+                feedUrls = listOf(source.feedUrl, "https://g1.globo.com/dynamo/rss2.xml")
+            )
             source.id == "ge" -> geCrawler.crawl(source)
-            source.id == "uol" -> uolCrawler.crawl(source)
+            source.id == "uol" -> combineWithRss(
+                specialized = uolCrawler.crawl(source),
+                source = source,
+                feedUrls = listOf(source.feedUrl, "https://rss.home.uol.com.br/index.xml", "https://rss.uol.com.br/feed/noticias.xml")
+            )
             source.id == "tecmundo" -> tecmundoCrawler.crawl(source)
             source.id == "voxel" -> voxelCrawler.crawl(source)
             source.id == "ign-brasil" -> ignCrawler.crawl(source)
@@ -61,7 +69,7 @@ class SmartFeedReader(
         feedUrls: List<String?>
     ): Result<List<FeedItem>> {
         val direct = specialized.getOrNull().orEmpty()
-        val urls = feedUrls.filterNotNull().filter(String::isNotBlank)
+        val urls = feedUrls.filterNotNull().filter(String::isNotBlank).distinct()
         val rss = if (urls.isNotEmpty()) rssCrawler.crawl(source, urls).getOrNull().orEmpty() else emptyList()
 
         if (direct.isEmpty() && rss.isEmpty()) {
@@ -80,6 +88,7 @@ class SmartFeedReader(
                 previous.copy(
                     title = previous.title.ifBlank { feedItem.title },
                     summary = previous.summary?.takeIf { it.isNotBlank() } ?: feedItem.summary,
+                    // RSS is the authoritative publication timestamp when the HTML card has none.
                     publishedAt = previous.publishedAt ?: feedItem.publishedAt,
                     imageUrl = previous.imageUrl?.takeIf { it.isNotBlank() } ?: feedItem.imageUrl
                 )
@@ -88,7 +97,8 @@ class SmartFeedReader(
 
         return Result.success(
             merged.values
-                .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenByDescending { it.id })
+                // Source-neutral ordering: publication time first, source never participates in priority.
+                .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title.lowercase() })
                 .take(MAX_PUBLISHER_ITEMS)
         )
     }
