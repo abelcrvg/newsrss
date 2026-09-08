@@ -246,6 +246,6 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         const val MIN_CONTENT_LENGTH = 180
         const val MIN_FALLBACK_LENGTH = 80
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36 NewsRSS/0.3"
-        val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\s*\\\"([^\\\"]+)\\\"")
+        val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
     }
 }
