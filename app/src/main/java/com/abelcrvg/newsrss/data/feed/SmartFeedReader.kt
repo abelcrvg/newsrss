@@ -30,8 +30,8 @@ class SmartFeedReader(
             source.id == "voxel" -> voxelCrawler.crawl(source)
             source.id == "ign-brasil" -> ignCrawler.crawl(source)
             source.id == "the-verge" || host == "theverge.com" -> fallbackToGeneric(theVergeCrawler.crawl(source), source)
-            host == "skysports.com" || host.endsWith(".skysports.com") -> fallbackToGeneric(skySportsCrawler.crawl(source), source)
-            host == "espn.com.br" || host.endsWith(".espn.com.br") -> fallbackToGeneric(espnCrawler.crawl(source), source)
+            source.id == "sky-sports" || host == "skysports.com" || host.endsWith(".skysports.com") -> fallbackToGeneric(skySportsCrawler.crawl(source), source)
+            source.id == "espn-brasil" || host == "espn.com.br" || host.endsWith(".espn.com.br") -> fallbackToGeneric(espnCrawler.crawl(source), source)
             else -> homepageCrawler.crawl(source)
         }
     }
