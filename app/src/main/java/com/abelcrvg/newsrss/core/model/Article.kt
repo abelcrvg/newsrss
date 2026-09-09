@@ -36,7 +36,14 @@ sealed interface ArticleBlock {
         val url: String,
         val caption: String? = null,
         val altText: String? = null
-    ) : ArticleBlock
+    ) : ArticleBlock {
+        init {
+            // Some publishers (notably CNN Brasil) expose accessibility text such as
+            // "Imagem que representa a matéria" as an image caption/alt text. It is
+            // metadata, not editorial content, so never let it reach reader mode.
+            require(url.isNotBlank())
+        }
+    }
     data class Quote(val text: String, val author: String? = null) : ArticleBlock
     data class ListBlock(val items: List<String>, val ordered: Boolean = false) : ArticleBlock
 }
