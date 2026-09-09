@@ -88,6 +88,7 @@ private fun NewsRSSApp() {
     var manageSources by remember { mutableStateOf(false) }
     var tab by remember { mutableIntStateOf(0) }
     val listState = rememberLazyListState()
+    val showScrollToTop = remember { derivedStateOf { listState.firstVisibleItemIndex > 2 || listState.firstVisibleItemScrollOffset > 400 } }
     var returnIndex by remember { mutableIntStateOf(0) }
     var returnOffset by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
@@ -199,6 +200,7 @@ private fun NewsRSSApp() {
             }
         }
     ) { padding ->
+        Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(padding)) {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -242,8 +244,15 @@ private fun NewsRSSApp() {
                 }
             }
         }
+            if (tab == 0 && showScrollToTop.value) {
+                FloatingActionButton(
+                    onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 88.dp)
+                ) { Text("↑") }
+            }
     }
-}
+
+        }}
 
 private fun mergeFeedItems(current: List<FeedItem>, incoming: List<FeedItem>): List<FeedItem> {
     val merged = LinkedHashMap<String, FeedItem>()
