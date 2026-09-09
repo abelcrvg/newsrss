@@ -222,7 +222,25 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun addImage(result: MutableList<ArticleBlock>, image: Element, caption: String?) {
         val src = firstNonBlank(image.absUrl("src"), image.absUrl("data-src"), image.absUrl("data-lazy-src"), image.absUrl("data-original"), image.absUrl("data-image"), image.absUrl("data-lazy"), image.absUrl("data-flickity-lazyload"), image.absUrl("data-original-src"), image.absUrl("data-image-url"), image.absUrl("data-url"), image.absUrl("data-thumb")) ?: image.attr("srcset").split(',').firstOrNull()?.trim()?.split(Regex("\\s+"))?.firstOrNull()
         if (src.isNullOrBlank() || (!src.startsWith("http://") && !src.startsWith("https://"))) return
-        result.add(ArticleBlock.Image(src, caption?.trim()?.takeIf(String::isNotBlank), image.attr("alt").trim().takeIf(String::isNotBlank)))
+        val cleanCaption = caption?.trim()?.takeIf(String::isNotBlank)?.takeUnless(::isAccessibilityImageText)
+        val cleanAlt = image.attr("alt").trim().takeIf(String::isNotBlank)?.takeUnless(::isAccessibilityImageText)
+        result.add(ArticleBlock.Image(src, cleanCaption, cleanAlt))
+    }
+
+    private fun isAccessibilityImageText(value: String): Boolean {
+        val normalized = value.trim().lowercase()
+        return normalized.startsWith("imagem que representa a matéria") ||
+            normalized.startsWith("imagem que representa a materia") ||
+            normalized.startsWith("imagem que representa a notícia") ||
+            normalized.startsWith("imagem que representa a noticia") ||
+            normalized.startsWith("imagem representando a matéria") ||
+            normalized.startsWith("imagem representando a materia") ||
+            normalized.startsWith("imagem representando a notícia") ||
+            normalized.startsWith("imagem representando a noticia") ||
+            normalized.startsWith("image representing the news") ||
+            normalized.startsWith("image representing this news") ||
+            normalized == "imagem da notícia" ||
+            normalized == "imagem da noticia"
     }
 
     private fun extractHeroImage(document: org.jsoup.nodes.Document): String? = firstNonBlank(
