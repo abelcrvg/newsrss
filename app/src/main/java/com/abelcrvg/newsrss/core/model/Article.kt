@@ -34,26 +34,9 @@ sealed interface ArticleBlock {
     data class Heading(val text: String, val level: Int = 2) : ArticleBlock
     data class Image(
         val url: String,
-        caption: String? = null,
-        altText: String? = null
-    ) : ArticleBlock {
-        val caption: String? = caption?.trim()?.takeIf(String::isNotBlank)?.takeUnless(::isAccessibilityText)
-        val altText: String? = altText?.trim()?.takeIf(String::isNotBlank)?.takeUnless(::isAccessibilityText)
-
-        companion object {
-            private fun isAccessibilityText(value: String): Boolean {
-                val normalized = value.trim().lowercase()
-                return normalized.startsWith("imagem que representa a matéria") ||
-                    normalized.startsWith("imagem que representa a materia") ||
-                    normalized.startsWith("imagem que representa a notícia") ||
-                    normalized.startsWith("imagem que representa a noticia") ||
-                    normalized.startsWith("image representing the news") ||
-                    normalized.startsWith("image representing this news") ||
-                    normalized == "imagem da notícia" ||
-                    normalized == "imagem da noticia"
-            }
-        }
-    }
+        val caption: String? = null,
+        val altText: String? = null
+    ) : ArticleBlock
     data class Quote(val text: String, val author: String? = null) : ArticleBlock
     data class ListBlock(val items: List<String>, val ordered: Boolean = false) : ArticleBlock
 }
