@@ -1,6 +1,6 @@
 package com.abelcrvg.newsrss.data.extraction
 
-import com.abelcrvg.newsRSS.core.extraction.ArticleExtractor
+import com.abelcrvg.newsrss.core.extraction.ArticleExtractor
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
 import kotlinx.coroutines.Dispatchers
