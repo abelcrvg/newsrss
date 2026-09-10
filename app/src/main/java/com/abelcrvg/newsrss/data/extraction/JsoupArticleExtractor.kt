@@ -1,8 +1,8 @@
-package com.abelcrvg.newsrsS.data.extraction
+package com.abelcrvg.newsrss.data.extraction
 
-import com.abelcrvg.newsrsS.core.extraction.ArticleExtractor
-import com.abelcrvg.newsrsS.core.model.Article
-import com.abelcrvg.newsrsS.core.model.ArticleBlock
+import com.abelcrvg.newsrss.core.extraction.ArticleExtractor
+import com.abelcrvg.newsrss.core.model.Article
+import com.abelcrvg.newsrss.core.model.ArticleBlock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
