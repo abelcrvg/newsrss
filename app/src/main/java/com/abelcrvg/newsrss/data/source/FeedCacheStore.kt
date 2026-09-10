@@ -13,6 +13,7 @@ class FeedCacheStore(context: Context) {
 
     fun load(): List<FeedItem> = runCatching {
         val array = JSONArray(prefs.getString(KEY_ITEMS, "[]"))
+        val cutoff = Instant.now().minusSeconds(MAX_AGE_DAYS * 24L * 60L * 60L)
         buildList {
             for (i in 0 until array.length()) {
                 runCatching {
@@ -20,6 +21,7 @@ class FeedCacheStore(context: Context) {
                     val publishedAt = o.optString("publishedAt").takeIf(String::isNotBlank)?.let { value ->
                         runCatching { Instant.parse(value) }.getOrNull()
                     }
+                    if (publishedAt != null && publishedAt < cutoff) return@runCatching
                     add(
                         FeedItem(
                             id = o.getString("id"),
@@ -80,5 +82,6 @@ class FeedCacheStore(context: Context) {
         const val PREFS = "newsrss_feed_cache"
         const val KEY_ITEMS = "items"
         const val KEY_UPDATED_AT = "updated_at"
+        const val MAX_AGE_DAYS = 45L
     }
 }
