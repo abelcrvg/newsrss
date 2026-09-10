@@ -176,9 +176,9 @@ private fun NewsRSSApp() {
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(16.dp, 14.dp, 16.dp, 96.dp)) {
                 item { HomeHeader(refreshing, initialized, newItems, sources.count { it.enabled }, { manageSources = true }, { refresh() }) }
                 if (tab == 0) item { CategoryFilter(category) { category = it } } else item { Text(if (tab == 1) "Notícias lidas" else "Ler depois", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+                if (opening) item { LoadingCard("Traduzindo e abrindo notícia…", true) }
                 if (refreshing) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
                 if (!initialized) item { LoadingCard("Preparando seu feed…") } else if (display.isEmpty()) item { EmptyState(tab) } else items(display, key = { it.id }) { news -> NewsCard(news, sourceById[news.sourceId], news.url in savedUrls, display.firstOrNull()?.id == news.id && tab == 0) { openItem(news) } }
-                if (opening) item { LoadingCard("Abrindo notícia…", true) }
                 error?.let { message -> if (display.isNotEmpty()) item { InlineError(message) { refresh() } } }
             }
             if (listState.firstVisibleItemIndex >= 6) SmallFloatingActionButton({ scope.launch { listState.animateScrollToItem(0) } }, Modifier.align(Alignment.BottomEnd).padding(16.dp)) { Text("↑", fontSize = 21.sp) }
