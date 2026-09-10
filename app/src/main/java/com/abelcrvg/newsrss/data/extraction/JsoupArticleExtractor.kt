@@ -105,9 +105,8 @@ class JsoupArticleExtractor : ArticleExtractor {
         if (height != null && height < MIN_IMAGE_HEIGHT) return false
         val srcsetWidths = listOf(image.attr("srcset"), image.attr("data-srcset")).flatMap { set -> set.split(',').mapNotNull { Regex("(\\d{3,5})w").find(it)?.groupValues?.get(1)?.toIntOrNull() } }
         if (srcsetWidths.maxOrNull()?.let { it < MIN_IMAGE_WIDTH } == true) return false
-        val knownWidth = width
-        val ratio = if (knownWidth != null && height != null && height > 0) knownWidth.toFloat() / height else null
-        if (ratio != null && (ratio < 0.55f || ratio > 2.6f) && knownWidth < 900) return false
+        val ratio = if (width != null && height != null && height > 0) width.toFloat() / height else null
+        if (ratio != null && (ratio < 0.55f || ratio > 2.6f) && width != null && width < 900) return false
         return true
     }
 
