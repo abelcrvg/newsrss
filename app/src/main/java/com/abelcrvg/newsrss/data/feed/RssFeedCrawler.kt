@@ -18,12 +18,19 @@ class RssFeedCrawler(private val timeoutMillis: Int = 12_000) {
     suspend fun crawl(source: FeedSource, feedUrls: List<String>): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
             val items = LinkedHashMap<String, FeedItem>()
+            val cutoff = Instant.now().minusSeconds(MAX_AGE_DAYS * 24L * 60L * 60L)
             feedUrls.distinct().forEach { feedUrl ->
                 runCatching { fetch(feedUrl) }.getOrNull()?.select("item,entry")?.forEach { entry ->
-                    candidate(source, entry)?.let { items.putIfAbsent(it.url, it) }
+                    candidate(source, entry)?.let { item ->
+                        // Some discontinued/redirected feeds keep serving old archives.
+                        // Never let those stale entries contaminate the current feed.
+                        if (item.publishedAt == null || item.publishedAt >= cutoff) {
+                            items.putIfAbsent(item.url, item)
+                        }
+                    }
                 }
             }
-            if (items.isEmpty()) error("Nenhuma notícia foi encontrada no RSS de ${source.name}")
+            if (items.isEmpty()) error("Nenhuma notícia recente foi encontrada no RSS de ${source.name}")
             items.values
                 .sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title })
                 .take(MAX_ITEMS)
@@ -106,6 +113,7 @@ class RssFeedCrawler(private val timeoutMillis: Int = 12_000) {
 
     private companion object {
         const val MAX_ITEMS = 40
+        const val MAX_AGE_DAYS = 45L
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36 NewsRSS/0.3"
     }
 }
