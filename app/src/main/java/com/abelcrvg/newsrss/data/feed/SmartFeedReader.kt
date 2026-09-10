@@ -35,12 +35,13 @@ class SmartFeedReader(
     }
 
     private suspend fun translateEnglishItems(source: FeedSource, result: Result<List<FeedItem>>): Result<List<FeedItem>> {
-        if (translationContext == null || source.language != SourceLanguage.ENGLISH || result.isFailure) return result
+        val context = translationContext ?: return result
+        if (source.language != SourceLanguage.ENGLISH || result.isFailure) return result
         val items = result.getOrNull().orEmpty()
         val targets = items.filter(::looksEnglish).take(MAX_ENGLISH_ITEMS)
         if (targets.isEmpty()) return result
         return runCatching {
-            val translated = OnDeviceTranslator(translationContext.applicationContext).translateFeedItems(targets)
+            val translated = OnDeviceTranslator(context.applicationContext).translateFeedItems(targets)
             val byUrl = translated.associateBy { it.url }
             Result.success(items.map { byUrl[it.url] ?: it })
         }.getOrElse { result }
