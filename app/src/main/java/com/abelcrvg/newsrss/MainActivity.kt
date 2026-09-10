@@ -110,7 +110,7 @@ private fun NewsRSSApp() {
             val reader = SmartFeedReader()
             val results: List<Pair<String, Result<List<FeedItem>>>> = enabled.map { source ->
                 async(Dispatchers.IO) {
-                    source.id to runCatching { reader.read(source) }.getOrThrow()
+                    source.id to runCatching { reader.read(source) }
                 }
             }.awaitAll()
             val incoming = buildList {
