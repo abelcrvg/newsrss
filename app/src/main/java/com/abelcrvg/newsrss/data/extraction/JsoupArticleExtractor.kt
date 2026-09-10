@@ -21,7 +21,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             val document = Jsoup.connect(url).userAgent(USER_AGENT).timeout(timeoutMillis).followRedirects(true)
                 .referrer("https://www.google.com/")
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-                .header("Accept-Language", "pt-BR,pt;q=0.9,en;q=0.8").get()
+                .header("Accept-Language", "en-US,en;q=0.9,pt-BR;q=0.7,pt;q=0.6").get()
             val theVerge = isTheVerge(url); val ge = isGe(url); val g1 = isG1(url)
             removeNoise(document)
             val title = firstNonBlank(document.select("meta[property=og:title]").attr("content"), document.select("meta[name=twitter:title]").attr("content"), document.select("h1").first()?.text(), document.title()) ?: error("Article title not found")
@@ -30,12 +30,11 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
             var blocks: List<ArticleBlock>
             if (theVerge) {
                 blocks = extractTheVergeBlocks(document)
+                if (blocks.sumOf { textOf(it).length } < MIN_CONTENT_LENGTH) {
+                    blocks = bestGenericBlocks(document, false, false)
+                }
             } else {
-                blocks = buildContentCandidates(document, false, g1).sortedByDescending(::score)
-                    .fold(emptyList()) { best, candidate ->
-                        val candidateBlocks = extractBlocks(candidate, 3, ge)
-                        if (candidateBlocks.sumOf { textOf(it).length } > best.sumOf { textOf(it).length }) candidateBlocks else best
-                    }
+                blocks = bestGenericBlocks(document, false, g1)
             }
 
             var textLength = blocks.sumOf { textOf(it).length }
@@ -60,12 +59,20 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         }
     }
 
+    private fun bestGenericBlocks(document: org.jsoup.nodes.Document, theVerge: Boolean, g1: Boolean): List<ArticleBlock> =
+        buildContentCandidates(document, theVerge, g1).sortedByDescending(::score)
+            .fold(emptyList()) { best, candidate ->
+                val candidateBlocks = extractBlocks(candidate, 3, isGe(document.baseUri()))
+                if (candidateBlocks.sumOf { textOf(it).length } > best.sumOf { textOf(it).length }) candidateBlocks else best
+            }
+
     private fun isTheVerge(url: String) = URI(url).host.orEmpty().lowercase().removePrefix("www.") == "theverge.com"
     private fun isGe(url: String) = URI(url).host.orEmpty().lowercase().removePrefix("www.") == "ge.globo.com"
     private fun isG1(url: String) = URI(url).host.orEmpty().lowercase().removePrefix("www.").endsWith("g1.globo.com")
+    private fun isGe(url: String?): Boolean = url?.let { runCatching { isGe(it) }.getOrDefault(false) } ?: false
 
     private fun extractTheVergeBlocks(document: org.jsoup.nodes.Document): List<ArticleBlock> = buildList {
-        document.select(".duet--article--article-body-component").forEach { component ->
+        document.select(".duet--article--article-body-component,.duet--article--article-body,[data-testid=article-body],[data-testid*=article-body]").forEach { component ->
             extractTheVergeComponent(component).forEach { block -> if (block !in this) add(block) }
         }
     }
@@ -108,7 +115,8 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         val selectors = mutableListOf(
             "article","main","[role=main]","[itemprop=articleBody]",".article-body",".article-content",".article__body",".article__content",
             ".story-body",".story-content",".post-content",".entry-content",".content-body",".materia-conteudo",".materia-corpo",
-            ".article__text",".article-text",".content",".main-content",".single-content",".post-body",".story-body-content"
+            ".article__text",".article-text",".content",".main-content",".single-content",".post-body",".story-body-content",
+            ".c-entry-content",".article-body__content","[class*=ArticleBody]","[class*=articleBody]","[data-testid*=article-content]"
         )
         if (g1) selectors += listOf(
             ".materia-conteudo__texto",".materia-corpo__texto",".article-body",".article-content",
@@ -117,7 +125,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         )
         val result = mutableListOf<Element>()
         selectors.forEach { selector -> document.select(selector).forEach { if (it !in result) result.add(it) } }
-        if (theVerge) document.select(".duet--article--article-body-component").forEach { if (it !in result) result.add(it) }
+        if (theVerge) document.select(".duet--article--article-body-component,.duet--article--article-body").forEach { if (it !in result) result.add(it) }
         document.select("div,section").asSequence().filter { it.select("p").size >= 2 && it.text().length >= 120 }.sortedByDescending(::score).forEach { if (it !in result) result.add(it) }
         return result
     }
@@ -229,27 +237,11 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
 
     private fun isAccessibilityImageText(value: String): Boolean {
         val normalized = value.trim().lowercase()
-        return normalized.startsWith("imagem que representa a matéria") ||
-            normalized.startsWith("imagem que representa a materia") ||
-            normalized.startsWith("imagem que representa a notícia") ||
-            normalized.startsWith("imagem que representa a noticia") ||
-            normalized.startsWith("imagem representando a matéria") ||
-            normalized.startsWith("imagem representando a materia") ||
-            normalized.startsWith("imagem representando a notícia") ||
-            normalized.startsWith("imagem representando a noticia") ||
-            normalized.startsWith("image representing the news") ||
-            normalized.startsWith("image representing this news") ||
-            normalized == "imagem da notícia" ||
-            normalized == "imagem da noticia"
+        return normalized.startsWith("imagem que representa a matéria") || normalized.startsWith("imagem que representa a materia") || normalized.startsWith("imagem que representa a notícia") || normalized.startsWith("imagem que representa a noticia") || normalized.startsWith("imagem representando a matéria") || normalized.startsWith("imagem representando a materia") || normalized.startsWith("imagem representando a notícia") || normalized.startsWith("imagem representando a noticia") || normalized.startsWith("image representing the news") || normalized.startsWith("image representing this news") || normalized == "imagem da notícia" || normalized == "imagem da noticia"
     }
 
-    private fun extractHeroImage(document: org.jsoup.nodes.Document): String? = firstNonBlank(
-        document.select("meta[property=og:image]").attr("content"), document.select("meta[property=og:image:url]").attr("content"),
-        document.select("meta[name=twitter:image]").attr("content"), document.select("meta[name=twitter:image:src]").attr("content")
-    )?.let { normalizeUrl(it, document.baseUri()) }
-
+    private fun extractHeroImage(document: org.jsoup.nodes.Document): String? = firstNonBlank(document.select("meta[property=og:image]").attr("content"), document.select("meta[property=og:image:url]").attr("content"), document.select("meta[name=twitter:image]").attr("content"), document.select("meta[name=twitter:image:src]").attr("content"))?.let { normalizeUrl(it, document.baseUri()) }
     private fun extractAuthor(document: org.jsoup.nodes.Document): String? = firstNonBlank(document.select("meta[name=author]").attr("content"), document.select("meta[property=article:author]").attr("content"), document.select("[rel=author]").first()?.text(), document.select(".author,.byline,.article-author,.article__author,.autor,.materia-cabecalho__autor").first()?.text())
-
     private fun extractPublishedAt(document: org.jsoup.nodes.Document): Instant? {
         val values = listOf(document.select("meta[property=article:published_time]").attr("content"), document.select("meta[property=datePublished]").attr("content"), document.select("meta[name=date]").attr("content"), document.select("meta[itemprop=datePublished]").attr("content"), document.select("time[datetime]").first()?.attr("datetime"))
         values.asSequence().mapNotNull(::parseDate).firstOrNull()?.let { return it }
@@ -261,9 +253,9 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun firstNonBlank(vararg values: String?) = values.asSequence().mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }.firstOrNull()
 
     private companion object {
-        const val MIN_CONTENT_LENGTH = 180
-        const val MIN_FALLBACK_LENGTH = 80
-        const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36 NewsRSS/0.3"
+        const val MIN_CONTENT_LENGTH = 120
+        const val MIN_FALLBACK_LENGTH = 60
+        const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36 NewsRSS/0.4"
         val DATE_PUBLISHED_REGEX = Regex("\\\"datePublished\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
     }
 }
