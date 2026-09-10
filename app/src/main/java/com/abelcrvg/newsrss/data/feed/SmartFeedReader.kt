@@ -37,11 +37,20 @@ class SmartFeedReader(
     private suspend fun translateEnglishItems(source: FeedSource, result: Result<List<FeedItem>>): Result<List<FeedItem>> {
         if (translationContext == null || source.language != SourceLanguage.ENGLISH || result.isFailure) return result
         val items = result.getOrNull().orEmpty()
-        if (items.isEmpty()) return result
+        val targets = items.filter(::looksEnglish).take(MAX_ENGLISH_ITEMS)
+        if (targets.isEmpty()) return result
         return runCatching {
-            // Sequential, bounded translation on the IO dispatcher. Cached Portuguese text is then used by the UI on the next load.
-            OnDeviceTranslator(translationContext.applicationContext).translateFeedItems(items.take(MAX_ENGLISH_ITEMS)) + items.drop(MAX_ENGLISH_ITEMS)
-        }.fold({ Result.success(it) }, { result })
+            val translated = OnDeviceTranslator(translationContext.applicationContext).translateFeedItems(targets)
+            val byUrl = translated.associateBy { it.url }
+            Result.success(items.map { byUrl[it.url] ?: it })
+        }.getOrElse { result }
+    }
+
+    private fun looksEnglish(item: FeedItem): Boolean {
+        val text = "${item.title} ${item.summary.orEmpty()}".lowercase()
+        val englishSignals = listOf(" the ", " and ", " of ", " to ", " in ", " for ", " with ", " from ", " has ", " have ", " will ", " on ", " at ", " is ", " are ", " this ", " that ", " after ", " before ", " latest ", " news ", " report ")
+        val portugueseSignals = listOf(" o ", " a ", " os ", " as ", " de ", " do ", " da ", " dos ", " das ", " para ", " com ", " que ", " em ", " no ", " na ", " uma ", " um ", " não ", " está ", " sobre ")
+        return englishSignals.count(text::contains) >= 2 && englishSignals.count(text::contains) > portugueseSignals.count(text::contains)
     }
 
     private fun filterTrivelaBettingContent(result: Result<List<FeedItem>>): Result<List<FeedItem>> = result.map { items -> items.filterNot(::isBettingFocusedTrivelaArticle) }
