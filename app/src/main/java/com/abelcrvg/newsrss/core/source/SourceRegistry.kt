@@ -2,6 +2,7 @@ package com.abelcrvg.newsrss.core.source
 
 import com.abelcrvg.newsrss.core.model.FeedSource
 import com.abelcrvg.newsrss.core.model.NewsCategory
+import com.abelcrvg.newsrss.core.model.SourceLanguage
 
 /**
  * Central registry for the sources enabled in the app.
@@ -14,7 +15,7 @@ object SourceRegistry {
         FeedSource("g1", "G1", "https://g1.globo.com", category = NewsCategory.NEWS),
         FeedSource("uol", "UOL", "https://www.uol.com.br", category = NewsCategory.NEWS),
         FeedSource("ge", "ge", "https://ge.globo.com", category = NewsCategory.FOOTBALL),
-        FeedSource("sky-sports", "Sky Sports", "https://www.skysports.com/football/news", category = NewsCategory.FOOTBALL),
+        FeedSource("sky-sports", "Sky Sports", "https://www.skysports.com/football/news", category = NewsCategory.FOOTBALL, language = SourceLanguage.ENGLISH),
         FeedSource("espn-brasil", "ESPN Brasil", "https://www.espn.com.br/futebol", category = NewsCategory.FOOTBALL),
         FeedSource("tnt-sports", "TNT Sports", "https://tntsports.com.br", category = NewsCategory.FOOTBALL),
         FeedSource("lance", "Lance!", "https://www.lance.com.br", category = NewsCategory.FOOTBALL),
@@ -27,7 +28,11 @@ object SourceRegistry {
         FeedSource("ign-brasil", "IGN Brasil", "https://br.ign.com", category = NewsCategory.GAMES),
         FeedSource("adrenaline", "Adrenaline", "https://www.adrenaline.com.br", category = NewsCategory.GAMES),
         FeedSource("the-enemy", "The Enemy", "https://www.theenemy.com.br", category = NewsCategory.GAMES),
-        FeedSource("the-verge", "The Verge", "https://www.theverge.com", category = NewsCategory.ENGLISH),
+        FeedSource("the-verge", "The Verge", "https://www.theverge.com", category = NewsCategory.ENGLISH, language = SourceLanguage.ENGLISH),
+        FeedSource("reuters", "Reuters", "https://www.reuters.com", category = NewsCategory.WORLD, language = SourceLanguage.ENGLISH),
+        FeedSource("bbc-news", "BBC News", "https://www.bbc.com/news", feedUrl = "https://feeds.bbci.co.uk/news/rss.xml", category = NewsCategory.WORLD, language = SourceLanguage.ENGLISH),
+        FeedSource("guardian", "The Guardian", "https://www.theguardian.com", feedUrl = "https://www.theguardian.com/world/rss", category = NewsCategory.WORLD, language = SourceLanguage.ENGLISH),
+        FeedSource("ap-news", "AP News", "https://apnews.com", category = NewsCategory.WORLD, language = SourceLanguage.ENGLISH),
         FeedSource("cnn-brasil", "CNN Brasil", "https://www.cnnbrasil.com.br", feedUrl = "https://www.cnnbrasil.com.br/feed/", category = NewsCategory.NEWS),
         FeedSource("infomoney", "InfoMoney", "https://www.infomoney.com.br", feedUrl = "https://www.infomoney.com.br/feed/", category = NewsCategory.ECONOMY),
         FeedSource("superinteressante", "Superinteressante", "https://super.abril.com.br/tudo-sobre/superinteressante/", category = NewsCategory.ENTERTAINMENT),
