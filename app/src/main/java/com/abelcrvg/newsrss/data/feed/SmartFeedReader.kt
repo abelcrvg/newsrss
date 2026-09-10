@@ -1,6 +1,7 @@
 package com.abelcrvg.newsrss.data.feed
 
 import android.content.Context
+import com.abelcrvg.newsrss.NewsRssApplication
 import com.abelcrvg.newsrss.core.feed.FeedItem
 import com.abelcrvg.newsrss.core.feed.FeedReader
 import com.abelcrvg.newsrss.core.model.FeedSource
@@ -11,34 +12,23 @@ import kotlinx.coroutines.withContext
 import java.net.URI
 import java.time.Instant
 
-/** Selects the best crawler automatically and combines direct HTML with RSS metadata for difficult publishers. */
 class SmartFeedReader(
-    private val translationContext: Context? = null,
-    private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler(),
-    private val g1Crawler: G1SiteCrawler = G1SiteCrawler(),
-    private val geCrawler: GESiteCrawler = GESiteCrawler(),
-    private val uolCrawler: UolSiteCrawler = UolSiteCrawler(),
-    private val tecmundoCrawler: TecmundoSiteCrawler = TecmundoSiteCrawler(),
-    private val voxelCrawler: VoxelSiteCrawler = VoxelSiteCrawler(),
-    private val ignCrawler: IgnBrasilSiteCrawler = IgnBrasilSiteCrawler(),
-    private val theVergeCrawler: TheVergeSiteCrawler = TheVergeSiteCrawler(),
-    private val skySportsCrawler: SkySportsSiteCrawler = SkySportsSiteCrawler(),
-    private val espnCrawler: EspnSiteCrawler = EspnSiteCrawler(),
-    private val rssCrawler: RssFeedCrawler = RssFeedCrawler()
+    private val translationContext: Context? = runCatching { NewsRssApplication.appContext }.getOrNull(),
+    private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler(), private val g1Crawler: G1SiteCrawler = G1SiteCrawler(), private val geCrawler: GESiteCrawler = GESiteCrawler(), private val uolCrawler: UolSiteCrawler = UolSiteCrawler(), private val tecmundoCrawler: TecmundoSiteCrawler = TecmundoSiteCrawler(), private val voxelCrawler: VoxelSiteCrawler = VoxelSiteCrawler(), private val ignCrawler: IgnBrasilSiteCrawler = IgnBrasilSiteCrawler(), private val theVergeCrawler: TheVergeSiteCrawler = TheVergeSiteCrawler(), private val skySportsCrawler: SkySportsSiteCrawler = SkySportsSiteCrawler(), private val espnCrawler: EspnSiteCrawler = EspnSiteCrawler(), private val rssCrawler: RssFeedCrawler = RssFeedCrawler()
 ) : FeedReader {
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         val host = runCatching { URI(source.siteUrl).host.orEmpty().removePrefix("www.").lowercase() }.getOrDefault("")
         val result = when {
-            source.id == "g1" -> combineWithRss(specialized = g1Crawler.crawl(source), source = source, feedUrls = listOf(source.feedUrl, "https://g1.globo.com/dynamo/rss2.xml"))
+            source.id == "g1" -> combineWithRss(g1Crawler.crawl(source), source, listOf(source.feedUrl, "https://g1.globo.com/dynamo/rss2.xml"))
             source.id == "ge" -> geCrawler.crawl(source)
-            source.id == "uol" -> combineWithRss(specialized = uolCrawler.crawl(source), source = source, feedUrls = listOf(source.feedUrl, "https://rss.home.uol.com.br/index.xml", "https://rss.uol.com.br/feed/noticias.xml"))
+            source.id == "uol" -> combineWithRss(uolCrawler.crawl(source), source, listOf(source.feedUrl, "https://rss.home.uol.com.br/index.xml", "https://rss.uol.com.br/feed/noticias.xml"))
             source.id == "tecmundo" -> tecmundoCrawler.crawl(source)
             source.id == "voxel" -> voxelCrawler.crawl(source)
             source.id == "ign-brasil" -> ignCrawler.crawl(source)
             source.id == "the-verge" || host == "theverge.com" -> fallbackToGeneric(theVergeCrawler.crawl(source), source)
-            source.id == "sky-sports" || host == "skysports.com" || host.endsWith(".skysports.com") -> combineWithRss(specialized = skySportsCrawler.crawl(source), source = source, feedUrls = listOf(source.feedUrl, "https://www.skysports.com/rss/12040", "https://www.skysports.com/rss/11095"))
-            source.id == "espn-brasil" || host == "espn.com.br" || host.endsWith(".espn.com.br") -> combineWithRss(specialized = espnCrawler.crawl(source), source = source, feedUrls = listOf(source.feedUrl, "https://www.espn.com/espn/rss/soccer/news"))
-            else -> combineWithRss(specialized = homepageCrawler.crawl(source), source = source, feedUrls = listOf(source.feedUrl))
+            source.id == "sky-sports" || host == "skysports.com" || host.endsWith(".skysports.com") -> combineWithRss(skySportsCrawler.crawl(source), source, listOf(source.feedUrl, "https://www.skysports.com/rss/12040", "https://www.skysports.com/rss/11095"))
+            source.id == "espn-brasil" || host == "espn.com.br" || host.endsWith(".espn.com.br") -> combineWithRss(espnCrawler.crawl(source), source, listOf(source.feedUrl, "https://www.espn.com/espn/rss/soccer/news"))
+            else -> combineWithRss(homepageCrawler.crawl(source), source, listOf(source.feedUrl))
         }
         val filtered = if (source.id == "trivela") filterTrivelaBettingContent(result) else result
         translateEnglishItems(source, filtered)
@@ -49,22 +39,18 @@ class SmartFeedReader(
         val items = result.getOrNull().orEmpty()
         if (items.isEmpty()) return result
         return runCatching {
-            // The translator processes the list sequentially on Dispatchers.IO, so the UI never blocks.
-            // Keep the startup workload bounded; the remaining English items are translated on later refreshes.
+            // Sequential, bounded translation on the IO dispatcher. Cached Portuguese text is then used by the UI on the next load.
             OnDeviceTranslator(translationContext.applicationContext).translateFeedItems(items.take(MAX_ENGLISH_ITEMS)) + items.drop(MAX_ENGLISH_ITEMS)
-        }.fold(
-            onSuccess = { translated -> Result.success(translated) },
-            onFailure = { result }
-        )
+        }.fold({ Result.success(it) }, { result })
     }
 
     private fun filterTrivelaBettingContent(result: Result<List<FeedItem>>): Result<List<FeedItem>> = result.map { items -> items.filterNot(::isBettingFocusedTrivelaArticle) }
     private fun isBettingFocusedTrivelaArticle(item: FeedItem): Boolean {
         val title = normalize(item.title); val summary = normalize(item.summary.orEmpty())
-        val strongTitleTerms = listOf("casa de apostas", "casas de apostas", "apostas esportivas", "aposta esportiva", "apostadores", "apostador", "betting", "bookmaker", "odds", "cotacao das apostas", "cotacoes das apostas", "palpites", "prognostico", "prognosticos", "bonus de aposta", "bonus das casas", "melhores casas", "onde apostar", "como apostar", "cassino", "casino", "bet365", "betano", "sportingbet", "superbet", "novibet", "kto", "pixbet", "estrelabet")
-        if (strongTitleTerms.any(title::contains)) return true
-        val bettingSignals = listOf("apostas", "apostar", "apostadores", "odds", "betting", "bookmaker", "palpites", "prognostico", "prognosticos", "casa de apostas", "casas de apostas", "cassino", "casino", "bet365", "betano", "sportingbet", "superbet", "novibet", "kto", "pixbet", "estrelabet", "bonus de aposta")
-        return bettingSignals.count { summary.contains(it) } >= 2
+        val strong = listOf("casa de apostas", "casas de apostas", "apostas esportivas", "aposta esportiva", "apostadores", "apostador", "betting", "bookmaker", "odds", "cotacao das apostas", "cotacoes das apostas", "palpites", "prognostico", "prognosticos", "bonus de aposta", "bonus das casas", "melhores casas", "onde apostar", "como apostar", "cassino", "casino", "bet365", "betano", "sportingbet", "superbet", "novibet", "kto", "pixbet", "estrelabet")
+        if (strong.any(title::contains)) return true
+        val signals = listOf("apostas", "apostar", "apostadores", "odds", "betting", "bookmaker", "palpites", "prognostico", "prognosticos", "casa de apostas", "casas de apostas", "cassino", "casino", "bet365", "betano", "sportingbet", "superbet", "novibet", "kto", "pixbet", "estrelabet", "bonus de aposta")
+        return signals.count { summary.contains(it) } >= 2
     }
     private fun normalize(value: String): String = value.lowercase().replace("á", "a").replace("à", "a").replace("ã", "a").replace("â", "a").replace("é", "e").replace("ê", "e").replace("í", "i").replace("ó", "o").replace("ô", "o").replace("õ", "o").replace("ú", "u").replace("ç", "c")
     private suspend fun fallbackToGeneric(specialized: Result<List<FeedItem>>, source: FeedSource): Result<List<FeedItem>> { if (specialized.isSuccess && specialized.getOrNull().orEmpty().isNotEmpty()) return specialized; val generic = homepageCrawler.crawl(source); if (generic.isSuccess && generic.getOrNull().orEmpty().isNotEmpty()) return generic; return specialized }
