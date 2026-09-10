@@ -3,16 +3,12 @@ package com.abelcrvg.newsrss.core.model
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.unit.sp
 import java.time.Instant
 
-/**
- * Normalized representation of an article, independent of its original source.
- * Paragraphs retain a small sanitized inline-HTML representation so the reader
- * can preserve emphasis and links without embedding a WebView.
- */
+/** Normalized article model. Paragraphs may retain sanitized inline HTML for reader formatting. */
 data class Article(
     val id: String,
     val sourceId: String,
@@ -31,16 +27,11 @@ sealed interface ArticleBlock {
         val inlineHtml: String? = null
     ) : ArticleBlock {
         constructor(text: String, inlineHtml: String? = null) : this(
-            annotatedParagraph(text, inlineHtml),
-            inlineHtml
+            annotatedParagraph(text, inlineHtml), inlineHtml
         )
     }
     data class Heading(val text: String, val level: Int = 2) : ArticleBlock
-    data class Image(
-        val url: String,
-        val caption: String? = null,
-        val altText: String? = null
-    ) : ArticleBlock
+    data class Image(val url: String, val caption: String? = null, val altText: String? = null) : ArticleBlock
     data class Quote(val text: String, val author: String? = null) : ArticleBlock
     data class ListBlock(val items: List<String>, val ordered: Boolean = false) : ArticleBlock
 }
@@ -48,39 +39,34 @@ sealed interface ArticleBlock {
 private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedString {
     if (inlineHtml.isNullOrBlank()) return AnnotatedString(text)
     return runCatching {
-        val source = inlineHtml
         buildAnnotatedString {
             var cursor = 0
             val tagRegex = Regex("<(/?)(strong|b|em|i|a)(?:\\s+[^>]*)?>", RegexOption.IGNORE_CASE)
             val stack = ArrayDeque<Pair<String, Int>>()
-            tagRegex.findAll(source).forEach { match ->
-                append(stripInlineTags(source.substring(cursor, match.range.first)))
+            tagRegex.findAll(inlineHtml).forEach { match ->
+                append(stripInlineTags(inlineHtml.substring(cursor, match.range.first)))
                 val closing = match.groupValues[1] == "/"
                 val tag = match.groupValues[2].lowercase()
                 if (!closing) {
                     stack.addLast(tag to length)
-                    cursor = match.range.last + 1
                 } else {
                     val open = stack.indexOfLast { it.first == tag }
                     if (open >= 0) {
                         val (_, start) = stack.removeAt(open)
                         if (start < length) {
-                            val style = when (tag) {
+                            addStyle(when (tag) {
                                 "strong", "b" -> SpanStyle(fontWeight = FontWeight.Bold)
-                                "em", "i" -> SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                                "em", "i" -> SpanStyle(fontStyle = FontStyle.Italic)
                                 "a" -> SpanStyle(textDecoration = TextDecoration.Underline)
                                 else -> SpanStyle()
-                            }
-                            addStyle(style, start, length)
+                            }, start, length)
                         }
                     }
-                    cursor = match.range.last + 1
                 }
+                cursor = match.range.last + 1
             }
-            append(stripInlineTags(source.substring(cursor)))
-        }.let { result ->
-            if (result.text.isBlank()) AnnotatedString(text) else result
-        }
+            append(stripInlineTags(inlineHtml.substring(cursor)))
+        }.let { if (it.text.isBlank()) AnnotatedString(text) else it }
     }.getOrElse { AnnotatedString(text) }
 }
 
@@ -91,5 +77,3 @@ private fun stripInlineTags(value: String): String =
         .replace("&amp;", "&")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
-        .replace(Regex("\\s+"), " ")
-        .trim()
