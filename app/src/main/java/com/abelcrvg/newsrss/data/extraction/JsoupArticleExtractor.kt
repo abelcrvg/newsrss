@@ -3,155 +3,146 @@ package com.abelcrvg.newsrss.data.extraction
 import com.abelcrvg.newsrss.core.extraction.ArticleExtractor
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
-import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.net.URI
 import java.time.Instant
-import java.time.OffsetDateTime
-import java.time.ZonedDateTime
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
-class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleExtractor {
-    override suspend fun extract(url: String): Result<Article> = withContext(Dispatchers.IO) {
-        runCatching {
-            require(url.startsWith("http://") || url.startsWith("https://"))
-            val document = Jsoup.connect(url).userAgent(USER_AGENT).timeout(timeoutMillis).followRedirects(true).referrer("https://www.google.com/")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-                .header("Accept-Language", "en-US,en;q=0.9,pt-BR;q=0.7,pt;q=0.6").get()
-            val host = URI(url).host.orEmpty().lowercase().removePrefix("www.")
-            removeNoise(document)
-            val title = firstNonBlank(document.select("meta[property=og:title]").attr("content"), document.select("meta[name=twitter:title]").attr("content"), document.selectFirst("h1")?.text(), document.title()) ?: error("Article title not found")
-            val subtitle = firstNonBlank(document.select("meta[property=og:description]").attr("content"), document.select("meta[name=description]").attr("content"), document.select("meta[name=twitter:description]").attr("content"))?.takeIf { !sameText(it, title) }
-            var blocks = contentCandidates(document, host).map { extractBlocks(it) }.maxByOrNull(::contentScore).orEmpty()
-            val jsonLd = extractJsonLdBody(document)
-            if (contentScore(jsonLd) > contentScore(blocks)) blocks = jsonLd
-            blocks = dedupe(blocks).filterNot { it is ArticleBlock.Paragraph && (sameText(it.text.text, title) || (!subtitle.isNullOrBlank() && sameText(it.text.text, subtitle))) }
-            val length = blocks.sumOf { textOf(it).length }
-            require(blocks.isNotEmpty() && length >= MIN_CONTENT_LENGTH) { "No readable article content found (extracted $length characters)" }
-            Article(url.hashCode().toUInt().toString(16), host, url, title, subtitle, extractAuthor(document), extractPublishedAt(document), extractHeroImage(document), blocks)
-        }
-    }
+class JsoupArticleExtractor : ArticleExtractor {
+    override suspend fun extract(url: String): Result<Article> = runCatching {
+        val document = Jsoup.connect(url)
+            .userAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128 Mobile Safari/537.36")
+            .referrer("https://www.google.com/")
+            .timeout(20_000)
+            .get()
 
-    private fun contentCandidates(document: Document, host: String): List<Element> {
-        val selectors = linkedSetOf(
-            "[itemprop=articleBody]", "article", "main", "[role=main]", "[data-testid=article-body]", "[data-testid*=article-body]", "[data-testid*=article-content]",
-            "[class*=ArticleBody]", "[class*=articleBody]", ".duet--article--article-body-component", ".duet--article--article-body", ".article-body", ".article-content",
-            ".article__body", ".article__content", ".story-body", ".story-content", ".post-content", ".entry-content", ".content-body", ".c-entry-content",
-            ".article-body__content", ".materia-conteudo", ".materia-corpo", ".materia-conteudo__texto", ".materia-corpo__texto", ".mc-article-body", ".mc-article-body-content"
+        document.select("script,style,noscript,iframe,nav,footer,header,aside,form,.advertisement,.ad,.ads,.social-share,.related-content,.newsletter,.comments").remove()
+
+        val title = document.select("meta[property=og:title]").attr("content").ifBlank {
+            document.select("h1").firstOrNull()?.text().orEmpty()
+        }.ifBlank { document.title() }.trim()
+
+        val subtitle = document.select("meta[property=og:description]").attr("content").trim().ifBlank {
+            document.select("[class*=subtitle],[class*=subheadline],.dek,.standfirst").firstOrNull()?.text()?.trim().orEmpty()
+        }.ifBlank { null }
+
+        val author = document.select("meta[name=author]").attr("content").trim().ifBlank {
+            document.select("[rel=author],[class*=author],[class*=byline]").firstOrNull()?.text()?.trim().orEmpty()
+        }.ifBlank { null }
+
+        val publishedAt = parseDate(
+            document.select("meta[property=article:published_time],meta[name=date],meta[itemprop=datePublished]").firstOrNull()?.attr("content")
+                ?: document.select("time[datetime]").firstOrNull()?.attr("datetime")
         )
-        if (host == "theverge.com") {
-            selectors.add("[data-testid='article-body']")
-            selectors.add("[data-testid='article-content']")
-            selectors.add(".duet--article--article-body-component")
-            selectors.add(".duet--article--article-body")
-            selectors.add(".duet--article--article-body-component > div")
+
+        val body = findBestBody(document, url)
+        val blocks = extractBlocks(body)
+        if (blocks.none { it is ArticleBlock.Paragraph || it is ArticleBlock.Heading }) {
+            throw IllegalStateException("Não foi possível encontrar o conteúdo da notícia.")
         }
-        val result = linkedSetOf<Element>()
-        selectors.forEach { selector -> runCatching { document.select(selector).forEach(result::add) } }
-        document.select("div,section").asSequence()
-            .filter { it.select("p").size >= 2 && it.text().length >= 80 }
-            .sortedByDescending { it.text().length + it.select("p").size * 250 }
-            .take(40).forEach(result::add)
-        return result.toList()
+
+        Article(
+            title = title,
+            subtitle = subtitle,
+            author = author,
+            publishedAt = publishedAt,
+            heroImageUrl = extractHeroImage(document),
+            blocks = blocks,
+            sourceId = sourceIdFromUrl(url)
+        )
     }
 
-    private fun extractBlocks(root: Element): List<ArticleBlock> {
-        val copy = root.clone()
-        removeNoiseFromRoot(copy)
+    private fun findBestBody(document: org.jsoup.nodes.Document, url: String): Element {
+        val candidates = mutableListOf<Element>()
+        if (url.contains("theverge.com", true)) {
+            document.select("[data-testid='article-body'],[data-testid='article-content'],.duet--article--article-body-component,.duet--article--article-body,.duet--article--article-body-component > div").forEach(candidates::add)
+        }
+        document.select("[itemprop=articleBody],article,main,[role=main],[data-testid=article-body],[data-testid*=article-body],[data-testid*=article-content],[class*=ArticleBody],[class*=articleBody],.article-body,.article-content,.article__body,.article__content,.story-body,.story-content,.post-content,.entry-content,.content-body,.c-entry-content").forEach(candidates::add)
+        val jsonBody = document.select("script[type=application/ld+json]").mapNotNull { script ->
+            script.data().takeIf { it.contains("articleBody", true) }
+        }.firstOrNull()
+        val scored = candidates.distinctBy { it.outerHtml() }.map { it to bodyScore(it) }.sortedByDescending { it.second }
+        if (scored.isNotEmpty() && scored.first().second >= 80) return scored.first().first
+        if (jsonBody != null) {
+            val text = Regex("\\\"articleBody\\\"\\s*:\\s*\\\"(.*?)\\\"", RegexOption.DOT_MATCHES_ALL).find(jsonBody)?.groupValues?.getOrNull(1)
+            if (!text.isNullOrBlank()) return Jsoup.parse("<article><p>${org.jsoup.parser.Parser.unescapeEntities(text, false)}</p></article>").selectFirst("article")!!
+        }
+        return document.body()
+    }
+
+    private fun bodyScore(element: Element): Int {
+        val textLength = element.text().length
+        val paragraphs = element.select("p").count { it.text().trim().length >= 40 }
+        val headings = element.select("h2,h3").size
+        return textLength + paragraphs * 160 + headings * 80
+    }
+
+    private fun extractBlocks(body: Element): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
-        val seenImages = linkedSetOf<String>()
-        copy.select("p,h2,h3,h4,h5,blockquote,ul,ol,figure,img").forEach { element ->
+        body.select("script,style,noscript,iframe,svg,nav,footer,header,aside,form,.advertisement,.ad,.ads,.social-share,.related-content,.newsletter,.comments,img,video,audio,figure:has(img)").remove()
+        body.select("h1,h2,h3,h4,h5,h6,p,blockquote,li").forEach { element ->
+            val text = sanitizeInlineHtml(element) ?: return@forEach
             when (element.tagName()) {
-                "p" -> element.text().trim().takeIf { it.length >= 2 }?.let { result += ArticleBlock.Paragraph(it, sanitizeInlineHtml(element)) }
-                "h2", "h3", "h4", "h5" -> element.text().trim().takeIf(String::isNotBlank)?.let { result += ArticleBlock.Heading(it, element.tagName().drop(1).toInt().coerceAtMost(4)) }
-                "blockquote" -> element.text().trim().takeIf(String::isNotBlank)?.let { result += ArticleBlock.Quote(it) }
-                "ul", "ol" -> {
-                    val values = element.children().filter { it.tagName() == "li" }.map { it.text().replace(Regex("\\s+"), " ").trim() }.filter(String::isNotBlank)
-                    if (values.isNotEmpty()) result += ArticleBlock.ListBlock(values, element.tagName() == "ol")
-                }
-                "figure" -> element.selectFirst("img")?.let { image ->
-                    val imageUrlValue = imageUrl(image)
-                    if (isArticleImage(image) && imageUrlValue.isNotBlank() && seenImages.add(normalizeImageUrl(imageUrlValue))) {
-                        result += ArticleBlock.Image(imageUrlValue, element.selectFirst("figcaption")?.text(), image.attr("alt"))
-                    }
-                }
-                "img" -> if (element.parent()?.tagName() != "figure") {
-                    val imageUrlValue = imageUrl(element)
-                    if (isArticleImage(element) && imageUrlValue.isNotBlank() && seenImages.add(normalizeImageUrl(imageUrlValue))) result += ArticleBlock.Image(imageUrlValue, null, element.attr("alt"))
-                }
+                "h1", "h2", "h3", "h4", "h5", "h6" -> result += ArticleBlock.Heading(text, element.tagName().drop(1).toInt())
+                "blockquote" -> result += ArticleBlock.Quote(text, null)
+                "li" -> result += ArticleBlock.ListBlock(listOf(text), false)
+                else -> if (text.length >= 40) result += ArticleBlock.Paragraph(text)
             }
         }
-        return result
+        return dedupeBlocks(result)
     }
 
-    private fun extractJsonLdBody(document: Document): List<ArticleBlock> {
-        val result = mutableListOf<ArticleBlock>()
-        document.select("script[type=application/ld+json]").forEach { script ->
-            val match = Regex("\\\"articleBody\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"", RegexOption.DOT_MATCHES_ALL).find(script.data()) ?: return@forEach
-            val body = match.groupValues[1].replace("\\\\n", "\n").replace("\\\\r", "\r").replace("\\\\\"", "\"").replace("\\\\/", "/")
-            body.split(Regex("\n{2,}")).map { it.replace(Regex("\\s+"), " ").trim() }.filter { it.length >= 2 }.forEach { result += ArticleBlock.Paragraph(it) }
-        }
-        return result
-    }
-
-    private fun removeNoise(document: Document) {
-        document.select("script:not([type=application/ld+json]),style,noscript,iframe,canvas,svg,form,nav,footer,header,aside,[role=navigation],[role=banner],[role=contentinfo],.ad,.ads,.advert,.advertisement,.social,.share,.comments,.comment,.related,.recommendations,.recommended,.newsletter,.cookie,.cookies,.popup,.modal,.login,.subscription").remove()
-        document.select("[hidden],[aria-hidden=true]").remove()
-    }
-
-    private fun removeNoiseFromRoot(root: Element) {
-        root.select("script,style,noscript,iframe,canvas,svg,form,nav,footer,header,aside,.ad,.ads,.advert,.advertisement,.social,.share,.comments,.comment,.related,.recommendations,.recommended,.newsletter,.cookie,.cookies,.popup,.modal,.login,.subscription").remove()
-        root.select("a[href*='facebook.com'],a[href*='instagram.com'],a[href*='youtube.com'],a[href*='whatsapp'],a[href*='twitter.com'],a[href*='x.com'],a[href*='threads.net'],a[href*='tiktok.com']").remove()
-    }
-
-    private fun dedupe(blocks: List<ArticleBlock>): List<ArticleBlock> {
-        val seen = linkedSetOf<String>()
+    private fun dedupeBlocks(blocks: List<ArticleBlock>): List<ArticleBlock> {
+        val seen = HashSet<String>()
         return blocks.filter { block ->
             val key = when (block) {
-                is ArticleBlock.Paragraph -> normalize(block.text.text)
-                is ArticleBlock.Heading -> "h:" + normalize(block.text)
-                is ArticleBlock.Quote -> "q:" + normalize(block.text)
-                is ArticleBlock.ListBlock -> "l:" + block.items.joinToString("|") { normalize(it) }
-                is ArticleBlock.Image -> "i:" + normalizeImageUrl(block.url)
-            }
-            key.isNotBlank() && seen.add(key)
+                is ArticleBlock.Paragraph -> block.text
+                is ArticleBlock.Heading -> block.text
+                is ArticleBlock.Quote -> block.text
+                is ArticleBlock.ListBlock -> block.items.joinToString("|")
+                is ArticleBlock.Image -> block.url
+            }.trim().lowercase()
+            seen.add(key)
         }
     }
 
-    private fun contentScore(blocks: List<ArticleBlock>) = blocks.sumOf { textOf(it).length } + blocks.count { it is ArticleBlock.Paragraph } * 150
-    private fun textOf(block: ArticleBlock) = when (block) {
-        is ArticleBlock.Paragraph -> block.text.text
-        is ArticleBlock.Heading -> block.text
-        is ArticleBlock.Quote -> block.text
-        is ArticleBlock.ListBlock -> block.items.joinToString(" ")
-        is ArticleBlock.Image -> block.caption.orEmpty()
+    private fun sanitizeInlineHtml(element: Element): String? {
+        val copy = element.clone()
+        copy.select("script,style,iframe,svg,img,video,audio,object,embed").remove()
+        copy.select("*").forEach { node ->
+            node.removeAttr("class")
+            node.removeAttr("id")
+            node.removeAttr("style")
+            node.removeAttr("onclick")
+            node.removeAttr("onload")
+        }
+        return copy.text().replace(Regex("\\s+"), " ").trim().takeIf { it.length >= 2 }
     }
-    private fun extractAuthor(document: Document): String? = firstNonBlank(document.select("meta[name=author]").attr("content"), document.select("meta[property=article:author]").attr("content"), document.select("[rel=author]").first()?.text(), document.select("[itemprop=author] [itemprop=name]").first()?.text(), document.select("[itemprop=author]").first()?.text())
-    private fun extractPublishedAt(document: Document): Instant? = document.select("meta[property=article:published_time],meta[property=article:published],meta[name=date],meta[itemprop=datePublished],time[datetime]").asSequence().map { it.attr("content").ifBlank { it.attr("datetime") } }.mapNotNull(::parseDate).firstOrNull()
-    private fun extractHeroImage(document: Document): String? = firstNonBlank(document.select("meta[property=og:image]").attr("content"), document.select("meta[name=twitter:image]").attr("content"))
 
-    private fun imageUrl(image: Element): String {
-        val srcset = listOf(image.attr("srcset"), image.attr("data-srcset")).firstOrNull(String::isNotBlank).orEmpty()
-        val best = srcset.split(',').mapNotNull { candidate ->
+    private fun extractHeroImage(document: org.jsoup.nodes.Document): String? {
+        val meta = document.select("meta[property=og:image],meta[name=twitter:image]").firstOrNull()?.attr("content")?.trim()
+        if (!meta.isNullOrBlank()) return meta
+        return document.select("img").firstOrNull { isLargeUsefulImage(it) }?.let { largestSrcSet(it) ?: it.absUrl("src") }
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun largestSrcSet(image: Element): String? {
+        val srcset = image.attr("srcset").ifBlank { image.attr("data-srcset") }
+        if (srcset.isBlank()) return null
+        return srcset.split(',').mapNotNull { candidate ->
             val parts = candidate.trim().split(Regex("\\s+"))
-            val width = parts.getOrNull(1)?.removeSuffix("w")?.toIntOrNull() ?: 0
-            parts.firstOrNull()?.takeIf(String::isNotBlank)?.let { it to width }
-        }.maxByOrNull { it.second }?.first
-        if (!best.isNullOrBlank()) return resolveImage(best, image)
-        val direct = listOf(image.attr("data-src"), image.attr("data-lazy-src"), image.attr("data-original"), image.attr("src")).firstOrNull(String::isNotBlank)
-        return resolveImage(direct.orEmpty(), image)
+            val width = parts.lastOrNull()?.removeSuffix("w")?.toIntOrNull() ?: 0
+            val url = parts.firstOrNull().orEmpty()
+            if (url.isNotBlank() && width > 0) width to url else null
+        }.maxByOrNull { it.first }?.second
     }
 
-    private fun resolveImage(value: String, image: Element): String = runCatching { URI(image.baseUri()).resolve(value).toString() }.getOrDefault(value)
-    private fun normalizeImageUrl(url: String): String = url.substringBefore('?').substringBefore('#').trim().lowercase().removePrefix("https://").removePrefix("http://").removePrefix("www.").trimEnd('/')
-
-    private fun isArticleImage(image: Element): Boolean {
-        val value = "${image.className()} ${image.id()} ${image.attr("alt")} ${image.attr("src")} ${image.attr("data-src")} ${image.attr("data-srcset")}".lowercase()
-        val noise = listOf("avatar", "author", "profile", "headshot", "portrait", "logo", "icon", "sprite", "favicon", "tracking", "pixel", "qr-code", "qrcode", "social", "share", "newsletter", "related", "recommend", "thumbnail", "reporter", "journalist", "byline")
-        if (noise.any(value::contains)) return false
+    private fun isLargeUsefulImage(image: Element): Boolean {
+        val attrs = (image.attr("alt") + " " + image.attr("class") + " " + image.attr("id") + " " + image.attr("src") + " " + image.attr("data-src")).lowercase()
+        val blocked = listOf("avatar", "author", "profile", "headshot", "portrait", "logo", "icon", "sprite", "favicon", "tracking", "pixel", "qr-code", "social", "share", "newsletter", "related", "recommend", "thumbnail", "reporter", "journalist", "byline")
+        if (blocked.any(attrs::contains)) return false
 
         val width = listOf(image.attr("width"), image.attr("data-width"), image.attr("data-image-width")).mapNotNull(String::toIntOrNull).maxOrNull()
         val height = listOf(image.attr("height"), image.attr("data-height"), image.attr("data-image-height")).mapNotNull(String::toIntOrNull).maxOrNull()
@@ -162,27 +153,25 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         val srcsetWidths = listOf(image.attr("srcset"), image.attr("data-srcset")).flatMap { set ->
             set.split(',').mapNotNull { Regex("(\\d{3,5})w").find(it)?.groupValues?.get(1)?.toIntOrNull() }
         }
-        if (srcsetWidths.isNotEmpty() && srcsetWidths.max() < MIN_IMAGE_WIDTH) return false
+        if (srcsetWidths.maxOrNull()?.let { it < MIN_IMAGE_WIDTH } == true) return false
 
         val ratio = if (width != null && height != null && height > 0) width.toFloat() / height else null
         if (ratio != null && (ratio < 0.55f || ratio > 2.6f) && width < 900) return false
         return true
     }
 
-    private fun sanitizeInlineHtml(element: Element): String? {
-        val copy = element.clone()
-        copy.select("script,style,iframe,svg,img,video,audio,object,embed").remove()
-        copy.select("*").forEach { node ->
-            val attrs = node.attributes().asList().filter { (it.key == "href" && node.tagName() == "a") || it.key == "title" || it.key == "style" }
-            node.clearAttributes()
-            attrs.forEach { attr -> if (attr.key == "style") sanitizeStyle(attr.value).takeIf(String::isNotBlank)?.let { node.attr("style", it) } else node.attr(attr.key, attr.value) }
-        }
-        return copy.html().trim().takeIf { it.isNotBlank() && it != copy.text() }
+    private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf { it.isNotBlank() }?.let { raw ->
+        runCatching { Instant.parse(raw) }.getOrNull()
+            ?: runCatching { java.time.OffsetDateTime.parse(raw).toInstant() }.getOrNull()
+            ?: runCatching { java.time.LocalDateTime.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE_TIME).toInstant(ZoneOffset.UTC) }.getOrNull()
     }
-    private fun sanitizeStyle(style: String) = style.split(';').mapNotNull { declaration -> val parts = declaration.split(':', limit = 2); if (parts.size != 2) null else { val property = parts[0].trim().lowercase(); val value = parts[1].trim(); if (property in setOf("color", "font-weight", "text-decoration") && value.isNotBlank() && value.length <= 80 && !value.contains('{') && !value.contains('}')) "$property:$value" else null } }.joinToString(";")
-    private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf(String::isNotBlank)?.let { runCatching { Instant.parse(it) }.getOrNull() ?: runCatching { OffsetDateTime.parse(it).toInstant() }.getOrNull() ?: runCatching { ZonedDateTime.parse(it).toInstant() }.getOrNull() ?: runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull() }
-    private fun firstNonBlank(vararg values: String?): String? = values.asSequence().mapNotNull { it?.replace(Regex("\\s+"), " ")?.trim() }.firstOrNull(String::isNotBlank)
-    private fun sameText(a: String, b: String) = normalize(a) == normalize(b)
-    private fun normalize(value: String) = value.lowercase().replace(Regex("\\s+"), " ").trim().removeSuffix(".")
-    companion object { private const val MIN_CONTENT_LENGTH = 80; private const val MIN_IMAGE_WIDTH = 640; private const val MIN_IMAGE_HEIGHT = 360; private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.5" }
+
+    private fun sourceIdFromUrl(url: String): String = runCatching {
+        java.net.URI(url).host.orEmpty().removePrefix("www.").substringBefore('.')
+    }.getOrDefault("")
+
+    private companion object {
+        const val MIN_IMAGE_WIDTH = 640
+        const val MIN_IMAGE_HEIGHT = 360
+    }
 }
