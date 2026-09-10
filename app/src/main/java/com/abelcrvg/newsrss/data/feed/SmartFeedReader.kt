@@ -18,7 +18,7 @@ class SmartFeedReader(
     private val voxelCrawler: VoxelSiteCrawler = VoxelSiteCrawler(),
     private val ignCrawler: IgnBrasilSiteCrawler = IgnBrasilSiteCrawler(),
     private val theVergeCrawler: TheVergeSiteCrawler = TheVergeSiteCrawler(),
-    private val skySportsCrawler: SkySportsSiteCrawler = SkySportsSiteCrawler(),
+    private val skySportsCrawler: SkySportsCrawler = SkySportsCrawler(),
     private val espnCrawler: EspnSiteCrawler = EspnSiteCrawler(),
     private val rssCrawler: RssFeedCrawler = RssFeedCrawler()
 ) : FeedReader {
@@ -52,7 +52,11 @@ class SmartFeedReader(
                     source = source,
                     feedUrls = listOf(source.feedUrl, "https://www.espn.com/espn/rss/soccer/news")
                 )
-            else -> homepageCrawler.crawl(source)
+            else -> combineWithRss(
+                specialized = homepageCrawler.crawl(source),
+                source = source,
+                feedUrls = listOf(source.feedUrl)
+            )
         }
 
         if (source.id == "trivela") filterTrivelaBettingContent(result) else result
@@ -61,14 +65,10 @@ class SmartFeedReader(
     private fun filterTrivelaBettingContent(result: Result<List<FeedItem>>): Result<List<FeedItem>> =
         result.map { items -> items.filterNot(::isBettingFocusedTrivelaArticle) }
 
-    /**
-     * Trivela also publishes betting/affiliate content. Keep football stories that merely
-     * mention a bookmaker, but remove stories whose title clearly makes betting the subject.
-     */
+    /** Trivela also publishes betting/affiliate content. */
     private fun isBettingFocusedTrivelaArticle(item: FeedItem): Boolean {
         val title = normalize(item.title)
         val summary = normalize(item.summary.orEmpty())
-
         val strongTitleTerms = listOf(
             "casa de apostas", "casas de apostas", "apostas esportivas", "aposta esportiva",
             "apostadores", "apostador", "betting", "bookmaker", "odds", "cotacao das apostas",
@@ -78,31 +78,20 @@ class SmartFeedReader(
             "pixbet", "estrelabet"
         )
         if (strongTitleTerms.any(title::contains)) return true
-
         val bettingSignals = listOf(
             "apostas", "apostar", "apostadores", "odds", "betting", "bookmaker", "palpites",
             "prognostico", "prognosticos", "casa de apostas", "casas de apostas", "cassino",
             "casino", "bet365", "betano", "sportingbet", "superbet", "novibet", "kto",
             "pixbet", "estrelabet", "bonus de aposta"
         )
-        val signalCount = bettingSignals.count { summary.contains(it) }
-        return signalCount >= 2
+        return bettingSignals.count { summary.contains(it) } >= 2
     }
 
     private fun normalize(value: String): String =
         value.lowercase()
-            .replace("á", "a")
-            .replace("à", "a")
-            .replace("ã", "a")
-            .replace("â", "a")
-            .replace("é", "e")
-            .replace("ê", "e")
-            .replace("í", "i")
-            .replace("ó", "o")
-            .replace("ô", "o")
-            .replace("õ", "o")
-            .replace("ú", "u")
-            .replace("ç", "c")
+            .replace("á", "a").replace("à", "a").replace("ã", "a").replace("â", "a")
+            .replace("é", "e").replace("ê", "e").replace("í", "i").replace("ó", "o")
+            .replace("ô", "o").replace("õ", "o").replace("ú", "u").replace("ç", "c")
 
     private suspend fun fallbackToGeneric(specialized: Result<List<FeedItem>>, source: FeedSource): Result<List<FeedItem>> {
         if (specialized.isSuccess && specialized.getOrNull().orEmpty().isNotEmpty()) return specialized
@@ -136,7 +125,9 @@ class SmartFeedReader(
                 previous.copy(
                     title = previous.title.ifBlank { feedItem.title },
                     summary = previous.summary?.takeIf { it.isNotBlank() } ?: feedItem.summary,
-                    publishedAt = previous.publishedAt ?: feedItem.publishedAt,
+                    // RSS publication time is authoritative when available: homepage HTML can
+                    // expose an update/modified time or an ambiguous relative label.
+                    publishedAt = feedItem.publishedAt ?: previous.publishedAt,
                     imageUrl = previous.imageUrl?.takeIf { it.isNotBlank() } ?: feedItem.imageUrl
                 )
             }
