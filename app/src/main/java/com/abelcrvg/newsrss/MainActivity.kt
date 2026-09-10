@@ -92,7 +92,7 @@ private fun NewsRSSApp() {
     val sourceById = remember(sources) { sources.associateBy { it.id } }
 
     fun saveSources(value: List<FeedSource>) { sources = value; scope.launch(Dispatchers.IO) { sourceStore.save(value) } }
-    fun markRead(item: FeedItem) { if (item.url !in readUrls) { readUrls += item.url; readItems = (listOf(item) + readItems).distinctBy { it.url }.take(300); scope.launch(Dispatchers.IO) { readStore.markRead(item) } } }
+    fun markRead(item: FeedItem) { if (item.url !in readUrls) { readUrls = readUrls + item.url; readItems = (listOf(item) + readItems).distinctBy { it.url }.take(300); scope.launch(Dispatchers.IO) { readStore.markRead(item) } } }
     fun toggleSaved(item: FeedItem) {
         val save = item.url !in savedUrls
         savedUrls = if (save) savedUrls + item.url else savedUrls - item.url
@@ -101,17 +101,30 @@ private fun NewsRSSApp() {
     }
     fun refresh() {
         if (!initialized || refreshing) return
-        refreshing = true; error = null
+        refreshing = true
+        error = null
         scope.launch {
             val enabled = sources.filter { it.enabled }
             if (enabled.isEmpty()) { refreshing = false; error = "Nenhuma fonte ativa."; return@launch }
             val old = items.map { it.url }.toHashSet()
             val reader = SmartFeedReader()
-            val results = enabled.map { source -> async(Dispatchers.IO) { source.id to runCatching { reader.read(source) } } }.awaitAll()
-            val incoming = results.flatMap { (id, result) -> result.getOrNull().orEmpty().map { it.copy(sourceId = id) }.take(80) }
+            val results: List<Pair<String, Result<List<FeedItem>>>> = enabled.map { source ->
+                async(Dispatchers.IO) {
+                    source.id to runCatching { reader.read(source) }.getOrThrow()
+                }
+            }.awaitAll()
+            val incoming = buildList {
+                results.forEach { pair ->
+                    val id = pair.first
+                    val result = pair.second
+                    result.getOrNull().orEmpty().take(80).forEach { add(it.copy(sourceId = id)) }
+                }
+            }
             failedSources = results.filter { it.second.isFailure }.mapTo(linkedSetOf()) { it.first }
             val merged = mergeFeedItems(items, incoming).take(800)
-            items = merged; newItems = incoming.count { it.url !in old }; refreshing = false
+            items = merged
+            newItems = incoming.count { it.url !in old }
+            refreshing = false
             if (incoming.isNotEmpty()) withContext(Dispatchers.IO) { cacheStore.merge(incoming) }
         }
     }
