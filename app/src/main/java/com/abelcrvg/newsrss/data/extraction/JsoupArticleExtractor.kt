@@ -8,7 +8,6 @@ import org.jsoup.nodes.Element
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
-import java.util.Locale
 
 class JsoupArticleExtractor : ArticleExtractor {
     override suspend fun extract(url: String): Result<Article> = runCatching {
@@ -44,13 +43,15 @@ class JsoupArticleExtractor : ArticleExtractor {
         }
 
         Article(
+            id = url,
+            sourceId = sourceIdFromUrl(url),
+            url = url,
             title = title,
             subtitle = subtitle,
             author = author,
             publishedAt = publishedAt,
             heroImageUrl = extractHeroImage(document),
-            blocks = blocks,
-            sourceId = sourceIdFromUrl(url)
+            blocks = blocks
         )
     }
 
@@ -98,7 +99,7 @@ class JsoupArticleExtractor : ArticleExtractor {
         val seen = HashSet<String>()
         return blocks.filter { block ->
             val key = when (block) {
-                is ArticleBlock.Paragraph -> block.text
+                is ArticleBlock.Paragraph -> block.text.text
                 is ArticleBlock.Heading -> block.text
                 is ArticleBlock.Quote -> block.text
                 is ArticleBlock.ListBlock -> block.items.joinToString("|")
@@ -155,8 +156,9 @@ class JsoupArticleExtractor : ArticleExtractor {
         }
         if (srcsetWidths.maxOrNull()?.let { it < MIN_IMAGE_WIDTH } == true) return false
 
-        val ratio = if (width != null && height != null && height > 0) width.toFloat() / height else null
-        if (ratio != null && (ratio < 0.55f || ratio > 2.6f) && width < 900) return false
+        val knownWidth = width
+        val ratio = if (knownWidth != null && height != null && height > 0) knownWidth.toFloat() / height else null
+        if (ratio != null && (ratio < 0.55f || ratio > 2.6f) && knownWidth < 900) return false
         return true
     }
 
