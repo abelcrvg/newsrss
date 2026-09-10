@@ -1,6 +1,6 @@
 package com.abelcrvg.newsrss.data.extraction
 
-import com.abelcrvg.newsrss.core.extraction.ArticleExtractor
+import com.abelcrvg.newsRSS.core.extraction.ArticleExtractor
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
 import kotlinx.coroutines.Dispatchers
@@ -44,8 +44,10 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
         )
         if (host == "theverge.com") {
             selectors.add("[data-testid='article-body']")
+            selectors.add("[data-testid='article-content']")
             selectors.add(".duet--article--article-body-component")
             selectors.add(".duet--article--article-body")
+            selectors.add(".duet--article--article-body-component > div")
         }
         val result = linkedSetOf<Element>()
         selectors.forEach { selector -> runCatching { document.select(selector).forEach(result::add) } }
@@ -132,15 +134,15 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
     private fun extractHeroImage(document: Document): String? = firstNonBlank(document.select("meta[property=og:image]").attr("content"), document.select("meta[name=twitter:image]").attr("content"))
 
     private fun imageUrl(image: Element): String {
-        val direct = listOf(image.attr("src"), image.attr("data-src"), image.attr("data-lazy-src"), image.attr("data-original")).firstOrNull(String::isNotBlank)
-        if (direct != null) return resolveImage(direct, image)
         val srcset = listOf(image.attr("srcset"), image.attr("data-srcset")).firstOrNull(String::isNotBlank).orEmpty()
         val best = srcset.split(',').mapNotNull { candidate ->
             val parts = candidate.trim().split(Regex("\\s+"))
             val width = parts.getOrNull(1)?.removeSuffix("w")?.toIntOrNull() ?: 0
             parts.firstOrNull()?.takeIf(String::isNotBlank)?.let { it to width }
         }.maxByOrNull { it.second }?.first
-        return resolveImage(best.orEmpty(), image)
+        if (!best.isNullOrBlank()) return resolveImage(best, image)
+        val direct = listOf(image.attr("data-src"), image.attr("data-lazy-src"), image.attr("data-original"), image.attr("src")).firstOrNull(String::isNotBlank)
+        return resolveImage(direct.orEmpty(), image)
     }
 
     private fun resolveImage(value: String, image: Element): String = runCatching { URI(image.baseUri()).resolve(value).toString() }.getOrDefault(value)
@@ -148,7 +150,7 @@ class JsoupArticleExtractor(private val timeoutMillis: Int = 20_000) : ArticleEx
 
     private fun isArticleImage(image: Element): Boolean {
         val value = "${image.className()} ${image.id()} ${image.attr("alt")} ${image.attr("src")} ${image.attr("data-src")} ${image.attr("data-srcset")}".lowercase()
-        val noise = listOf("avatar", "author", "profile", "headshot", "portrait", "logo", "icon", "sprite", "favicon", "tracking", "pixel", "qr-code", "qrcode", "social", "share", "newsletter", "related", "recommend", "thumbnail", "reporter", "journalist")
+        val noise = listOf("avatar", "author", "profile", "headshot", "portrait", "logo", "icon", "sprite", "favicon", "tracking", "pixel", "qr-code", "qrcode", "social", "share", "newsletter", "related", "recommend", "thumbnail", "reporter", "journalist", "byline")
         if (noise.any(value::contains)) return false
 
         val width = listOf(image.attr("width"), image.attr("data-width"), image.attr("data-image-width")).mapNotNull(String::toIntOrNull).maxOrNull()
