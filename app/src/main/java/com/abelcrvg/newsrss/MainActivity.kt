@@ -269,7 +269,7 @@ private fun NewsRSSApp() {
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp, bottom = 96.dp)
+                contentPadding = PaddingValues(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 96.dp)
             ) {
                 item("top") {
                     HomeHeader(
