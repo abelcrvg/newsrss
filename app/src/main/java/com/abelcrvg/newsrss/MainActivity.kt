@@ -260,25 +260,25 @@ private data class InitialData(val sources: List<FeedSource>, val readUrls: Set<
 }
 
 @Composable private fun NewsCard(item: FeedItem, source: FeedSource?, saved: Boolean, read: Boolean, featured: Boolean, onClick: () -> Unit) {
-    val isCnn = item.sourceId.contains("cnn", true)
+    val title = cleanNewsTitle(item.title, item.sourceId)
     val titleColor = if (read) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
     val cardColor = if (read) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f) else MaterialTheme.colorScheme.surface
     Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = cardColor)) {
         if (featured) {
             Column {
-                if (!isCnn) item.imageUrl?.let { AsyncImage(it, null, Modifier.fillMaxWidth().height(190.dp), contentScale = ContentScale.Crop) }
+                item.imageUrl?.let { AsyncImage(it, null, Modifier.fillMaxWidth().height(190.dp), contentScale = ContentScale.Crop) }
                 Column(Modifier.padding(14.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(source?.name ?: "Fonte", color = if (read) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-                    Text(item.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, lineHeight = 31.sp, color = titleColor)
+                    Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, lineHeight = 31.sp, color = titleColor)
                     item.summary?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3) }
                     if (read) Text("✓ Lida", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                 }
             }
         } else Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (!isCnn) item.imageUrl?.let { AsyncImage(it, null, Modifier.size(96.dp, 76.dp), contentScale = ContentScale.Crop) }
+            item.imageUrl?.let { AsyncImage(it, null, Modifier.size(96.dp, 76.dp), contentScale = ContentScale.Crop) }
             Column(Modifier.weight(1f)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(source?.name ?: "Fonte", color = if (read) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-                Text(item.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, lineHeight = 21.sp, maxLines = 3, color = titleColor)
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, lineHeight = 21.sp, maxLines = 3, color = titleColor)
                 if (saved) Text("★ Salvo", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
                 if (read) Text("✓ Lida", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
             }
@@ -290,17 +290,18 @@ private data class InitialData(val sources: List<FeedSource>, val readUrls: Set<
     val listState = rememberLazyListState()
     val sourceColor = readerSourceColor(article.sourceId)
     val progress by remember { derivedStateOf { val total = listState.layoutInfo.totalItemsCount.coerceAtLeast(1); (listState.firstVisibleItemIndex.toFloat() / (total - 1).coerceAtLeast(1)).coerceIn(0f, 1f) } }
+    val cleanTitle = cleanNewsTitle(article.title, article.sourceId)
     Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = { Column { LinearProgressIndicator(progress, Modifier.fillMaxWidth().height(3.dp), color = sourceColor); TopAppBar(title = { Text("Leitura", fontWeight = FontWeight.SemiBold) }, navigationIcon = { IconButton(onClick = onBack) { Text("‹", fontSize = 32.sp) } }, actions = { TextButton(onClick = onToggleSaved) { Text(if (saved) "★" else "☆", fontSize = 24.sp) } }) } }) { padding ->
         LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 56.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
             item { Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.size(8.dp).clip(MaterialTheme.shapes.small).background(sourceColor)); Text(sourceLabel(article.sourceId), color = sourceColor, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge) }
-                Text(article.title, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold, lineHeight = 42.sp, letterSpacing = (-0.5).sp)
+                Text(cleanTitle, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold, lineHeight = 42.sp, letterSpacing = (-0.5).sp)
                 article.subtitle?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.titleLarge, lineHeight = 29.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) { article.author?.takeIf { it.isNotBlank() }?.let { Text("Por $it", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge) }; article.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
             } }
-            if (!article.heroImageUrl.isNullOrBlank() && !article.sourceId.contains("cnn", true)) item { AsyncImage(article.heroImageUrl, article.title, Modifier.fillMaxWidth().heightIn(max = 360.dp), contentScale = ContentScale.Crop) }
+            if (!article.heroImageUrl.isNullOrBlank()) item { AsyncImage(article.heroImageUrl, cleanTitle, Modifier.fillMaxWidth().heightIn(max = 360.dp), contentScale = ContentScale.Crop) }
             item { Spacer(Modifier.height(18.dp)) }
-            article.blocks.forEachIndexed { index, block -> item(key = "reader-$index") { ReaderBlock(block, sourceColor, article.title) } }
+            article.blocks.forEachIndexed { index, block -> item(key = "reader-$index") { ReaderBlock(block, sourceColor, cleanTitle) } }
         }
     }
 }
@@ -316,6 +317,13 @@ private data class InitialData(val sources: List<FeedSource>, val readUrls: Set<
         }
         Spacer(Modifier.height(20.dp))
     }
+}
+
+private fun cleanNewsTitle(title: String, sourceId: String): String {
+    if (!sourceId.contains("cnn", true)) return title.trim()
+    return title.trim()
+        .replace(Regex("(?i)^imagem\\s+representando\\s+a\\s+mat[ée]ria\\s*:\\s*"), "")
+        .trim()
 }
 
 private fun mergeFeedItems(current: List<FeedItem>, incoming: List<FeedItem>): List<FeedItem> {
