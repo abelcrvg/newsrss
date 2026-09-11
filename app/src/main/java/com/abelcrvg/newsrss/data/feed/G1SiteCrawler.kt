@@ -20,17 +20,25 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** Dedicated direct G1 crawler: extracts only the stories currently exposed on the G1 homepage. */
+/** Dedicated direct G1 crawler: extracts the live homepage plus a small current-news overflow. */
 class G1SiteCrawler {
     suspend fun crawl(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
             val base = source.siteUrl.trimEnd('/')
             val baseHost = URI(base).host?.removePrefix("www.") ?: error("URL inválida")
             val homepage = fetch(base)
-            val discovered = extractHomepage(homepage, source, baseHost)
+            val homepageItems = extractHomepage(homepage, source, baseHost)
 
-            // Enrich only the homepage stories so publication time/image can be taken
-            // from each article itself without importing RSS or archive stories.
+            // Keep the homepage exhaustive, then add only the first current Plantão page
+            // as a small overflow. We deliberately do not paginate/archive it.
+            val extraItems = runCatching {
+                extractHomepage(fetch("$base/plantao/"), source, baseHost)
+                    .filterNot { extra -> homepageItems.any { it.url == extra.url } }
+                    .take(MAX_EXTRA_ITEMS)
+            }.getOrDefault(emptyList())
+
+            val discovered = (homepageItems + extraItems).distinctBy { it.url }
+
             val enrichmentSemaphore = Semaphore(ENRICH_CONCURRENCY)
             coroutineScope {
                 discovered.map { item ->
@@ -112,7 +120,7 @@ class G1SiteCrawler {
 
     private fun isNewsArticle(path: String): Boolean {
         val normalized = path.lowercase().substringBefore('?').trimEnd('/')
-        return normalized.isNotBlank() && !normalized.startsWith("/plantao") && normalized.contains("/noticia/")
+        return normalized.isNotBlank() && normalized.contains("/noticia/")
     }
 
     /** Only inspect the actual card. Never fall back to the homepage og:image, which is the G1 logo. */
@@ -182,6 +190,7 @@ class G1SiteCrawler {
     private companion object {
         const val TIMEOUT = 15_000
         const val ENRICH_CONCURRENCY = 6
+        const val MAX_EXTRA_ITEMS = 40
         const val MIN_TITLE_LENGTH = 8
         const val MAX_TITLE_LENGTH = 220
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36 NewsRSS/0.3"
