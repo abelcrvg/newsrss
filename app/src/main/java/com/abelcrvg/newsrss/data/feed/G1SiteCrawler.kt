@@ -9,6 +9,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -39,15 +40,27 @@ class G1SiteCrawler {
 
             val discovered = (homepageItems + extraItems).distinctBy { it.url }
 
+            // Homepage extraction already supplies title, date, summary and card image for
+            // most items. Opening every article here made a large homepage refresh painfully
+            // slow. Enrich only a bounded prefix and let the remaining cards render immediately.
+            val enrichmentTargets = discovered.take(MAX_ENRICH_ITEMS)
             val enrichmentSemaphore = Semaphore(ENRICH_CONCURRENCY)
-            coroutineScope {
-                discovered.map { item ->
-                    async(Dispatchers.IO) { enrichmentSemaphore.withPermit { enrich(item) } }
+            val enrichedByUrl = coroutineScope {
+                enrichmentTargets.map { item ->
+                    async(Dispatchers.IO) {
+                        enrichmentSemaphore.withPermit {
+                            withTimeoutOrNull(ENRICH_TIMEOUT_MS) { enrich(item) } ?: item
+                        }
+                    }
                 }.awaitAll()
-            }.distinctBy { it.url }.sortedWith(
-                compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }
-                    .thenBy { it.title.lowercase() }
-            )
+            }.associateBy { it.url }
+
+            discovered.map { enrichedByUrl[it.url] ?: it }
+                .distinctBy { it.url }
+                .sortedWith(
+                    compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }
+                        .thenBy { it.title.lowercase() }
+                )
         }
     }
 
@@ -188,8 +201,10 @@ class G1SiteCrawler {
     }
 
     private companion object {
-        const val TIMEOUT = 15_000
+        const val TIMEOUT = 10_000
         const val ENRICH_CONCURRENCY = 6
+        const val MAX_ENRICH_ITEMS = 20
+        const val ENRICH_TIMEOUT_MS = 8_000L
         const val MAX_EXTRA_ITEMS = 40
         const val MIN_TITLE_LENGTH = 8
         const val MAX_TITLE_LENGTH = 220
