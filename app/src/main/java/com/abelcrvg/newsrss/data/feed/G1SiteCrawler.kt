@@ -20,34 +20,17 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** Dedicated direct G1 crawler: extracts each homepage card's own image/date and enriches from the article. */
+/** Dedicated direct G1 crawler: extracts only the stories currently exposed on the G1 homepage. */
 class G1SiteCrawler {
     suspend fun crawl(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         runCatching {
             val base = source.siteUrl.trimEnd('/')
             val baseHost = URI(base).host?.removePrefix("www.") ?: error("URL inválida")
             val homepage = fetch(base)
-            val homepageItems = extractHomepage(homepage, source, baseHost)
+            val discovered = extractHomepage(homepage, source, baseHost)
 
-            // The archive is walked until it stops yielding new links. There is no fixed
-            // page/item cap, but article enrichment is deliberately bounded to avoid
-            // opening hundreds of connections at once and freezing/crashing the phone.
-            val plantaoItems = mutableListOf<FeedItem>()
-            var page = 1
-            var emptyPages = 0
-            val seenPageUrls = mutableSetOf<String>()
-            while (emptyPages < 2) {
-                val url = if (page == 1) "$base/plantao/" else "$base/plantao/index/feed/pagina-$page.ghtml"
-                if (!seenPageUrls.add(url)) break
-                val result = runCatching { extractLinks(fetch(url), source, baseHost) }
-                if (result.isFailure) break
-                val found = result.getOrDefault(emptyList())
-                if (found.isEmpty()) emptyPages++ else emptyPages = 0
-                plantaoItems += found
-                page++
-            }
-
-            val discovered = (homepageItems + plantaoItems).distinctBy { it.url }
+            // Enrich only the homepage stories so publication time/image can be taken
+            // from each article itself without importing RSS or archive stories.
             val enrichmentSemaphore = Semaphore(ENRICH_CONCURRENCY)
             coroutineScope {
                 discovered.map { item ->
