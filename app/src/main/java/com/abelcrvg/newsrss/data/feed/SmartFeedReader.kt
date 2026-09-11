@@ -19,7 +19,9 @@ class SmartFeedReader(
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         val host = runCatching { URI(source.siteUrl).host.orEmpty().removePrefix("www.").lowercase() }.getOrDefault("")
         val result = when {
-            source.id == "g1" -> combineWithRss(g1Crawler.crawl(source), source, listOf(source.feedUrl, "https://g1.globo.com/dynamo/rss2.xml"))
+            // G1 is intentionally crawled from its live homepage only. Do not merge
+            // RSS/archive items, so Home mirrors the stories currently exposed by G1.
+            source.id == "g1" -> g1Crawler.crawl(source)
             source.id == "ge" -> geCrawler.crawl(source)
             source.id == "uol" -> combineWithRss(uolCrawler.crawl(source), source, listOf(source.feedUrl, "https://rss.home.uol.com.br/index.xml", "https://rss.uol.com.br/feed/noticias.xml"))
             source.id == "tecmundo" -> tecmundoCrawler.crawl(source)
