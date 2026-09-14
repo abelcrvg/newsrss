@@ -9,12 +9,19 @@ data class FeedSource(
     val feedUrl: String? = null,
     var category: NewsCategory = NewsCategory.NEWS,
     var language: SourceLanguage = SourceLanguage.AUTO,
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val refreshIntervalMinutes: Long = DEFAULT_REFRESH_MINUTES
 ) {
     init {
         val inferred = SourceAnalyzer.infer(siteUrl)
         if (category == NewsCategory.NEWS) category = inferred.category
         if (language == SourceLanguage.AUTO) language = inferred.language
+    }
+
+    companion object {
+        const val DEFAULT_REFRESH_MINUTES = 15L
+        const val FAST_REFRESH_MINUTES = 5L
+        const val SLOW_REFRESH_MINUTES = 30L
     }
 }
 
