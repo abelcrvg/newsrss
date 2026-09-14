@@ -19,8 +19,20 @@ data class Article(
     val author: String? = null,
     val publishedAt: Instant? = null,
     val heroImageUrl: String? = null,
-    val blocks: List<ArticleBlock> = emptyList()
+    val blocks: List<ArticleBlock> = emptyList(),
+    val summary: List<String> = emptyList(),
+    val extraction: ExtractionMetadata = ExtractionMetadata()
 )
+
+data class ExtractionMetadata(
+    val confidence: Int = 0,
+    val extractor: String = "unknown",
+    val wordCount: Int = 0,
+    val imageCount: Int = 0,
+    val warnings: List<String> = emptyList()
+) {
+    val isReliable: Boolean get() = confidence >= 80
+}
 
 sealed interface ArticleBlock {
     data class Paragraph(
@@ -46,7 +58,6 @@ private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedStri
             var cursor = 0
             val tagRegex = Regex("<(/?)(strong|b|em|i|u|a|span)(?:\\s+([^>]*))?>", RegexOption.IGNORE_CASE)
             val stack = ArrayDeque<InlineFrame>()
-
             fun appendSegment(value: String) {
                 if (value.isEmpty()) return
                 val start = length
@@ -54,7 +65,6 @@ private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedStri
                 if (length == start) return
                 stack.forEach { frame -> addStyle(frame.style, start, length) }
             }
-
             tagRegex.findAll(inlineHtml).forEach { match ->
                 appendSegment(inlineHtml.substring(cursor, match.range.first))
                 val closing = match.groupValues[1] == "/"
@@ -84,11 +94,9 @@ private fun parseInlineStyle(attributes: String): SpanStyle {
     val rawStyle = Regex("(?:^|\\s)style\\s*=\\s*[\\\"']([^\\\"']*)[\\\"']", RegexOption.IGNORE_CASE)
         .find(attributes)?.groupValues?.getOrNull(1).orEmpty()
     if (rawStyle.isBlank()) return SpanStyle()
-
     var color: Color? = null
     var weight: FontWeight? = null
     var decoration: TextDecoration? = null
-
     rawStyle.split(';').forEach { declaration ->
         val parts = declaration.split(':', limit = 2)
         if (parts.size != 2) return@forEach
@@ -100,34 +108,16 @@ private fun parseInlineStyle(attributes: String): SpanStyle {
             "text-decoration" -> if (value.contains("underline", ignoreCase = true)) decoration = TextDecoration.Underline
         }
     }
-
-    return SpanStyle(
-        color = color ?: Color.Unspecified,
-        fontWeight = weight,
-        textDecoration = decoration
-    )
+    return SpanStyle(color = color ?: Color.Unspecified, fontWeight = weight, textDecoration = decoration)
 }
 
 private fun parseCssColor(value: String): Color? {
     val v = value.trim().lowercase()
-    val named = mapOf(
-        "red" to Color(0xFFF44336), "darkred" to Color(0xFF8B0000), "crimson" to Color(0xFFDC143C),
-        "blue" to Color(0xFF0000FF), "green" to Color(0xFF008000), "black" to Color.Black,
-        "white" to Color.White, "gray" to Color.Gray, "grey" to Color.Gray,
-        "orange" to Color(0xFFFF9800), "yellow" to Color(0xFFFFFF00), "purple" to Color(0xFF800080)
-    )
+    val named = mapOf("red" to Color(0xFFF44336), "darkred" to Color(0xFF8B0000), "crimson" to Color(0xFFDC143C), "blue" to Color(0xFF0000FF), "green" to Color(0xFF008000), "black" to Color.Black, "white" to Color.White, "gray" to Color.Gray, "grey" to Color.Gray, "orange" to Color(0xFFFF9800), "yellow" to Color(0xFFFFFF00), "purple" to Color(0xFF800080))
     named[v]?.let { return it }
     if (v.startsWith("#")) return runCatching { Color(android.graphics.Color.parseColor(v)) }.getOrNull()
     val rgb = Regex("rgb\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)").find(v)
-    return rgb?.let {
-        Color(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].toInt())
-    }
+    return rgb?.let { Color(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].toInt()) }
 }
 
-private fun stripInlineTags(value: String): String =
-    value.replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
-        .replace(Regex("<[^>]+>"), "")
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
+private fun stripInlineTags(value: String): String = value.replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n").replace(Regex("<[^>]+>"), "").replace("&nbsp;", " ").replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'")
