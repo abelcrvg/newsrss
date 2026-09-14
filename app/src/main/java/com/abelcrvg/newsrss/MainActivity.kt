@@ -42,8 +42,6 @@ import com.abelcrvg.newsrss.data.source.SourceStore
 import com.abelcrvg.newsrss.data.translation.OnDeviceTranslator
 import com.abelcrvg.newsrss.ui.theme.NewsRSSTheme
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -110,22 +108,42 @@ private fun NewsRSSApp() {
         if (!initialized || refreshing) return
         refreshing = true
         error = null
+        failedSources = emptySet()
         scope.launch {
             val enabled = sources.filter { it.enabled }
-            if (enabled.isEmpty()) { refreshing = false; error = "Nenhuma fonte ativa."; return@launch }
+            if (enabled.isEmpty()) {
+                refreshing = false
+                error = "Nenhuma fonte ativa."
+                return@launch
+            }
             val old = items.map { it.url }.toHashSet()
             val reader = SmartFeedReader()
-            val results: List<Pair<String, Result<List<FeedItem>>>> = enabled.map { source ->
-                async(Dispatchers.IO) { source.id to runCatching { reader.read(source) }.getOrElse { Result.failure(it) } }
-            }.awaitAll()
-            val incoming = buildList {
-                results.forEach { (id, result) -> result.getOrNull().orEmpty().take(80).forEach { add(it.copy(sourceId = id)) } }
+            var addedCount = 0
+
+            for (source in enabled) {
+                val result: Result<List<FeedItem>> = try {
+                    withContext(Dispatchers.IO) { reader.read(source) }
+                } catch (t: Throwable) {
+                    Result.failure(t)
+                }
+
+                if (result.isFailure) {
+                    failedSources = failedSources + source.id
+                    continue
+                }
+
+                val batch = result.getOrNull().orEmpty()
+                    .take(80)
+                    .map { it.copy(sourceId = source.id) }
+
+                if (batch.isNotEmpty()) {
+                    items = mergeFeedItems(items, batch).take(800)
+                    addedCount += batch.count { it.url !in old }
+                    newItems = addedCount
+                    withContext(Dispatchers.IO) { cacheStore.merge(batch) }
+                }
             }
-            failedSources = results.filter { it.second.isFailure }.mapTo(linkedSetOf()) { it.first }
-            items = mergeFeedItems(items, incoming).take(800)
-            newItems = incoming.count { it.url !in old }
             refreshing = false
-            if (incoming.isNotEmpty()) withContext(Dispatchers.IO) { cacheStore.merge(incoming) }
         }
     }
     fun openItem(item: FeedItem) {
