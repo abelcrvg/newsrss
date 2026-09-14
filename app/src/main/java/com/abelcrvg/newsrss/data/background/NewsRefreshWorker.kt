@@ -11,6 +11,7 @@ import com.abelcrvg.newsrss.data.source.SourceStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+/** Refreshes sources sequentially so each source can populate the cache independently. */
 class NewsRefreshWorker(
     appContext: Context,
     workerParams: WorkerParameters
@@ -21,14 +22,20 @@ class NewsRefreshWorker(
         val sources = sourceStore.load(SourceRegistry.defaultSources).filter { it.enabled }
         if (sources.isEmpty()) return@withContext Result.success()
 
-        var successCount = 0
         val reader = SmartFeedReader()
+        var successCount = 0
+
+        // Deliberately sequential: finish one source, merge its items into the local
+        // cache, then move to the next. The UI can observe the cache between sources.
         for (source in sources) {
-            val result = reader.read(source)
+            val result = runCatching { reader.read(source) }.getOrElse { Result.failure(it) }
             if (result.isSuccess) {
-                val freshItems = result.getOrElse { emptyList() }.map { it.copy(sourceId = source.id) }
-                cacheStore.merge(freshItems)
-                SupabaseNewsPublisher.publish(freshItems)
+                val freshItems = result.getOrNull().orEmpty().map { it.copy(sourceId = source.id) }
+                if (freshItems.isNotEmpty()) {
+                    cacheStore.merge(freshItems)
+                    SupabaseNewsPublisher.publish(freshItems)
+                }
+                markRefreshed(source.id)
                 successCount++
             }
         }
@@ -39,5 +46,14 @@ class NewsRefreshWorker(
             runAttemptCount < 2 -> Result.retry()
             else -> Result.failure()
         }
+    }
+
+    private fun markRefreshed(sourceId: String) {
+        applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putLong("source:$sourceId", System.currentTimeMillis()).apply()
+    }
+
+    private companion object {
+        const val PREFS = "newsrss_refresh_state"
     }
 }
