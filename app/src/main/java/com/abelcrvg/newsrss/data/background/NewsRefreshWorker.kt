@@ -3,6 +3,7 @@ package com.abelcrvg.newsrss.data.background
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.abelcrvg.newsrss.core.model.FeedSource
 import com.abelcrvg.newsrss.core.source.SourceRegistry
 import com.abelcrvg.newsrss.data.feed.SmartFeedReader
 import com.abelcrvg.newsrss.data.remote.SupabaseNewsPublisher
@@ -35,7 +36,7 @@ class NewsRefreshWorker(
             due.map { source ->
                 async {
                     semaphore.withPermit {
-                        source to runCatching { reader.read(source) }
+                        source to reader.read(source)
                     }
                 }
             }.awaitAll()
@@ -60,7 +61,7 @@ class NewsRefreshWorker(
         }
     }
 
-    private fun isDue(source: com.abelcrvg.newsrss.core.model.FeedSource): Boolean {
+    private fun isDue(source: FeedSource): Boolean {
         val last = prefs.getLong("source:${source.id}", 0L)
         return last == 0L || System.currentTimeMillis() - last >= source.refreshIntervalMinutes * 60_000L
     }
