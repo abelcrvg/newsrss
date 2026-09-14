@@ -13,19 +13,14 @@ import java.time.format.DateTimeFormatter
 
 class JsoupArticleExtractor : ArticleExtractor {
     override suspend fun extract(url: String): Result<Article> = runCatching {
-        val document = Jsoup.connect(url)
-            .userAgent(USER_AGENT)
-            .referrer("https://www.google.com/")
-            .timeout(20_000)
-            .get()
-
+        val document = Jsoup.connect(url).userAgent(USER_AGENT).referrer("https://www.google.com/").timeout(20_000).get()
         val profile = ExtractionProfiles.forUrl(url)
         document.select("script,style,noscript,iframe,nav,footer,header,aside,form,.advertisement,.ad,.ads,.social-share,.related-content,.newsletter,.comments").remove()
         val title = document.select("meta[property=og:title]").attr("content").ifBlank { document.select("h1").firstOrNull()?.text().orEmpty() }.ifBlank { document.title() }.trim()
         val subtitle = document.select("meta[property=og:description]").attr("content").trim().ifBlank { document.select(profile.subtitleSelectors).firstOrNull()?.text()?.trim().orEmpty() }.ifBlank { null }
         val author = document.select("meta[name=author]").attr("content").trim().ifBlank { document.select(profile.authorSelectors).firstOrNull()?.text()?.trim().orEmpty() }.ifBlank { null }
         val publishedAt = parseDate(document.select("meta[property=article:published_time],meta[name=date],meta[itemprop=datePublished]").firstOrNull()?.attr("content") ?: document.select("time[datetime]").firstOrNull()?.attr("datetime"))
-        val body = findBestBody(document, url, profile)
+        val body = findBestBody(document, profile)
         val blocks = extractBlocks(body)
         if (blocks.none { it is ArticleBlock.Paragraph || it is ArticleBlock.Heading }) throw IllegalStateException("Não foi possível encontrar o conteúdo da notícia.")
         val hero = extractHeroImage(document)
@@ -39,14 +34,20 @@ class JsoupArticleExtractor : ArticleExtractor {
             if (wordCount < 250) add("short_article")
             if (confidence < 80) add("low_confidence")
         }
-        Article(
+        val base = Article(
             id = url, sourceId = sourceIdFromUrl(url), url = url, title = title, subtitle = subtitle,
             author = author, publishedAt = publishedAt, heroImageUrl = hero, blocks = blocks,
             extraction = ExtractionMetadata(confidence, profile.name, wordCount, document.select("img").size, warnings)
         )
+        val summary = ArticleSummaryGenerator.generate(base)
+        val readerBlocks = if (summary.isEmpty()) blocks else listOf(
+            ArticleBlock.Heading("Resumo rápido", 2),
+            ArticleBlock.ListBlock(summary, false)
+        ) + blocks
+        base.copy(summary = summary, blocks = readerBlocks)
     }
 
-    private fun findBestBody(document: org.jsoup.nodes.Document, url: String, profile: ExtractionProfile): Element {
+    private fun findBestBody(document: org.jsoup.nodes.Document, profile: ExtractionProfile): Element {
         val candidates = mutableListOf<Element>()
         document.select(profile.bodySelectors).forEach(candidates::add)
         document.select("[itemprop=articleBody],article,main,[role=main],[data-testid=article-body],[data-testid*=article-body],[data-testid*=article-content],[class*=ArticleBody],[class*=articleBody],.article-body,.article-content,.article__body,.article__content,.story-body,.story-content,.post-content,.entry-content,.content-body,.c-entry-content").forEach(candidates::add)
@@ -143,26 +144,12 @@ class JsoupArticleExtractor : ArticleExtractor {
         return true
     }
 
-    private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf { it.isNotBlank() }?.let { raw ->
-        runCatching { Instant.parse(raw) }.getOrNull() ?: runCatching { java.time.OffsetDateTime.parse(raw).toInstant() }.getOrNull() ?: runCatching { java.time.LocalDateTime.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE_TIME).toInstant(ZoneOffset.UTC) }.getOrNull()
-    }
-
+    private fun parseDate(value: String?): Instant? = value?.trim()?.takeIf { it.isNotBlank() }?.let { raw -> runCatching { Instant.parse(raw) }.getOrNull() ?: runCatching { java.time.OffsetDateTime.parse(raw).toInstant() }.getOrNull() ?: runCatching { java.time.LocalDateTime.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE_TIME).toInstant(ZoneOffset.UTC) }.getOrNull() }
     private fun sourceIdFromUrl(url: String): String = runCatching { URI(url).host.orEmpty().removePrefix("www.").substringBefore('.') }.getOrDefault("")
-
-    private companion object {
-        const val MIN_IMAGE_WIDTH = 640
-        const val MIN_IMAGE_HEIGHT = 360
-        const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128 Mobile Safari/537.36"
-    }
+    private companion object { const val MIN_IMAGE_WIDTH = 640; const val MIN_IMAGE_HEIGHT = 360; const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128 Mobile Safari/537.36" }
 }
 
-data class ExtractionProfile(
-    val name: String,
-    val bodySelectors: String,
-    val subtitleSelectors: String,
-    val authorSelectors: String,
-    val minimumBodyScore: Int = 80
-)
+data class ExtractionProfile(val name: String, val bodySelectors: String, val subtitleSelectors: String, val authorSelectors: String, val minimumBodyScore: Int = 80)
 
 object ExtractionProfiles {
     private val generic = ExtractionProfile("GenericJsoup", "[itemprop=articleBody],article,main,[role=main]", "[class*=subtitle],[class*=subheadline],.dek,.standfirst", "[rel=author],[class*=author],[class*=byline]")
