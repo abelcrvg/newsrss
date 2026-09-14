@@ -256,7 +256,7 @@ private data class InitialData(val sources: List<FeedSource>, val readUrls: Set<
                 Column(Modifier.padding(14.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(source?.name ?: "Fonte", color = if (read) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                     Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, lineHeight = 31.sp, color = titleColor)
-                    item.summary?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3) }
+                    item.summary?.let { summary -> if (summary.isNotBlank()) Text(summary, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 23.sp) }
                     if (read) Text("✓ Lida", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                 }
             }
@@ -264,7 +264,7 @@ private data class InitialData(val sources: List<FeedSource>, val readUrls: Set<
             item.imageUrl?.let { AsyncImage(it, null, Modifier.size(96.dp, 76.dp), contentScale = ContentScale.Crop) }
             Column(Modifier.weight(1f)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(source?.name ?: "Fonte", color = if (read) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, lineHeight = 21.sp, maxLines = 3, color = titleColor)
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, lineHeight = 21.sp, color = titleColor)
                 if (saved) Text("★ Salvo", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
                 if (read) Text("✓ Lida", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
             }
@@ -284,6 +284,11 @@ private data class InitialData(val sources: List<FeedSource>, val readUrls: Set<
                 Text(cleanTitle, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold, lineHeight = 42.sp, letterSpacing = (-0.5).sp)
                 article.subtitle?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.titleLarge, lineHeight = 29.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) { article.author?.takeIf { it.isNotBlank() }?.let { Text("Por $it", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge) }; article.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                if (article.extraction.warnings.any { it == "short_article" || it == "low_confidence" }) {
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
+                        Text("A página pode ter fornecido conteúdo parcial. O NewsRSS não limita o tamanho do texto; a extração depende do site.", Modifier.padding(10.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             } }
             if (!article.heroImageUrl.isNullOrBlank()) item { AsyncImage(article.heroImageUrl, cleanTitle, Modifier.fillMaxWidth().heightIn(max = 360.dp), contentScale = ContentScale.Crop) }
             item { Spacer(Modifier.height(18.dp)) }
