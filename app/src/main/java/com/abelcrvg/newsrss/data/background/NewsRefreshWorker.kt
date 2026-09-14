@@ -25,16 +25,14 @@ class NewsRefreshWorker(
         val reader = SmartFeedReader()
         var successCount = 0
 
-        // Deliberately sequential: finish one source, merge its items into the local
-        // cache, then move to the next. The UI can observe the cache between sources.
         for (source in sources) {
-            val result: Result<List<com.abelcrvg.newsrss.data.feed.FeedItem>> = try {
+            val result = try {
                 reader.read(source)
-            } catch (t: Throwable) {
-                Result.failure(t)
+            } catch (_: Throwable) {
+                null
             }
 
-            if (result.isSuccess) {
+            if (result != null) {
                 val freshItems = result.getOrNull().orEmpty().map { it.copy(sourceId = source.id) }
                 if (freshItems.isNotEmpty()) {
                     cacheStore.merge(freshItems)
