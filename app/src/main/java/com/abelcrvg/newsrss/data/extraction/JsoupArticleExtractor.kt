@@ -3,8 +3,10 @@ package com.abelcrvg.newsrss.data.extraction
 import com.abelcrvg.newsrss.core.extraction.ArticleExtractor
 import com.abelcrvg.newsrss.core.model.Article
 import com.abelcrvg.newsrss.core.model.ArticleBlock
+import com.abelcrvg.newsrss.core.model.ExtractionMetadata
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import java.net.URI
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -12,28 +14,45 @@ import java.time.format.DateTimeFormatter
 class JsoupArticleExtractor : ArticleExtractor {
     override suspend fun extract(url: String): Result<Article> = runCatching {
         val document = Jsoup.connect(url)
-            .userAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128 Mobile Safari/537.36")
+            .userAgent(USER_AGENT)
             .referrer("https://www.google.com/")
             .timeout(20_000)
             .get()
+
+        val profile = ExtractionProfiles.forUrl(url)
         document.select("script,style,noscript,iframe,nav,footer,header,aside,form,.advertisement,.ad,.ads,.social-share,.related-content,.newsletter,.comments").remove()
         val title = document.select("meta[property=og:title]").attr("content").ifBlank { document.select("h1").firstOrNull()?.text().orEmpty() }.ifBlank { document.title() }.trim()
-        val subtitle = document.select("meta[property=og:description]").attr("content").trim().ifBlank { document.select("[class*=subtitle],[class*=subheadline],.dek,.standfirst").firstOrNull()?.text()?.trim().orEmpty() }.ifBlank { null }
-        val author = document.select("meta[name=author]").attr("content").trim().ifBlank { document.select("[rel=author],[class*=author],[class*=byline]").firstOrNull()?.text()?.trim().orEmpty() }.ifBlank { null }
+        val subtitle = document.select("meta[property=og:description]").attr("content").trim().ifBlank { document.select(profile.subtitleSelectors).firstOrNull()?.text()?.trim().orEmpty() }.ifBlank { null }
+        val author = document.select("meta[name=author]").attr("content").trim().ifBlank { document.select(profile.authorSelectors).firstOrNull()?.text()?.trim().orEmpty() }.ifBlank { null }
         val publishedAt = parseDate(document.select("meta[property=article:published_time],meta[name=date],meta[itemprop=datePublished]").firstOrNull()?.attr("content") ?: document.select("time[datetime]").firstOrNull()?.attr("datetime"))
-        val body = findBestBody(document, url)
+        val body = findBestBody(document, url, profile)
         val blocks = extractBlocks(body)
         if (blocks.none { it is ArticleBlock.Paragraph || it is ArticleBlock.Heading }) throw IllegalStateException("Não foi possível encontrar o conteúdo da notícia.")
-        Article(id = url, sourceId = sourceIdFromUrl(url), url = url, title = title, subtitle = subtitle, author = author, publishedAt = publishedAt, heroImageUrl = extractHeroImage(document), blocks = blocks)
+        val hero = extractHeroImage(document)
+        val paragraphText = blocks.filterIsInstance<ArticleBlock.Paragraph>().joinToString(" ") { it.text.text }
+        val wordCount = paragraphText.split(Regex("\\s+")).count { it.isNotBlank() }
+        val confidence = confidence(title, subtitle, author, publishedAt, hero, blocks, body, profile)
+        val warnings = buildList {
+            if (author == null) add("author_missing")
+            if (publishedAt == null) add("date_missing")
+            if (hero == null) add("hero_image_missing")
+            if (wordCount < 250) add("short_article")
+            if (confidence < 80) add("low_confidence")
+        }
+        Article(
+            id = url, sourceId = sourceIdFromUrl(url), url = url, title = title, subtitle = subtitle,
+            author = author, publishedAt = publishedAt, heroImageUrl = hero, blocks = blocks,
+            extraction = ExtractionMetadata(confidence, profile.name, wordCount, document.select("img").size, warnings)
+        )
     }
 
-    private fun findBestBody(document: org.jsoup.nodes.Document, url: String): Element {
+    private fun findBestBody(document: org.jsoup.nodes.Document, url: String, profile: ExtractionProfile): Element {
         val candidates = mutableListOf<Element>()
-        if (url.contains("theverge.com", true)) document.select("[data-testid='article-body'],[data-testid='article-content'],.duet--article--article-body-component,.duet--article--article-body,.duet--article--article-body-component > div").forEach(candidates::add)
+        document.select(profile.bodySelectors).forEach(candidates::add)
         document.select("[itemprop=articleBody],article,main,[role=main],[data-testid=article-body],[data-testid*=article-body],[data-testid*=article-content],[class*=ArticleBody],[class*=articleBody],.article-body,.article-content,.article__body,.article__content,.story-body,.story-content,.post-content,.entry-content,.content-body,.c-entry-content").forEach(candidates::add)
         val jsonBody = document.select("script[type=application/ld+json]").mapNotNull { it.data().takeIf { data -> data.contains("articleBody", true) } }.firstOrNull()
         val scored = candidates.distinctBy { it.outerHtml() }.map { it to bodyScore(it) }.sortedByDescending { it.second }
-        if (scored.isNotEmpty() && scored.first().second >= 80) return scored.first().first
+        if (scored.isNotEmpty() && scored.first().second >= profile.minimumBodyScore) return scored.first().first
         if (jsonBody != null) {
             val text = Regex("\\\"articleBody\\\"\\s*:\\s*\\\"(.*?)\\\"", RegexOption.DOT_MATCHES_ALL).find(jsonBody)?.groupValues?.getOrNull(1)
             if (!text.isNullOrBlank()) return Jsoup.parse("<article><p>${org.jsoup.parser.Parser.unescapeEntities(text, false)}</p></article>").selectFirst("article")!!
@@ -42,6 +61,20 @@ class JsoupArticleExtractor : ArticleExtractor {
     }
 
     private fun bodyScore(element: Element): Int = element.text().length + element.select("p").count { it.text().trim().length >= 40 } * 160 + element.select("h2,h3").size * 80
+
+    private fun confidence(title: String, subtitle: String?, author: String?, date: Instant?, hero: String?, blocks: List<ArticleBlock>, body: Element, profile: ExtractionProfile): Int {
+        var score = 0
+        if (title.length >= 12) score += 20
+        if (!subtitle.isNullOrBlank()) score += 10
+        if (!author.isNullOrBlank()) score += 10
+        if (date != null) score += 10
+        if (hero != null) score += 10
+        if (blocks.count { it is ArticleBlock.Paragraph } >= 3) score += 15
+        if (blocks.count { it is ArticleBlock.Paragraph } >= 8) score += 10
+        if (body.text().length >= 1500) score += 10
+        if (bodyScore(body) >= profile.minimumBodyScore) score += 5
+        return score.coerceIn(0, 100)
+    }
 
     private fun extractBlocks(body: Element): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
@@ -114,7 +147,34 @@ class JsoupArticleExtractor : ArticleExtractor {
         runCatching { Instant.parse(raw) }.getOrNull() ?: runCatching { java.time.OffsetDateTime.parse(raw).toInstant() }.getOrNull() ?: runCatching { java.time.LocalDateTime.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE_TIME).toInstant(ZoneOffset.UTC) }.getOrNull()
     }
 
-    private fun sourceIdFromUrl(url: String): String = runCatching { java.net.URI(url).host.orEmpty().removePrefix("www.").substringBefore('.') }.getOrDefault("")
+    private fun sourceIdFromUrl(url: String): String = runCatching { URI(url).host.orEmpty().removePrefix("www.").substringBefore('.') }.getOrDefault("")
 
-    private companion object { const val MIN_IMAGE_WIDTH = 640; const val MIN_IMAGE_HEIGHT = 360 }
+    private companion object {
+        const val MIN_IMAGE_WIDTH = 640
+        const val MIN_IMAGE_HEIGHT = 360
+        const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/128 Mobile Safari/537.36"
+    }
+}
+
+data class ExtractionProfile(
+    val name: String,
+    val bodySelectors: String,
+    val subtitleSelectors: String,
+    val authorSelectors: String,
+    val minimumBodyScore: Int = 80
+)
+
+object ExtractionProfiles {
+    private val generic = ExtractionProfile("GenericJsoup", "[itemprop=articleBody],article,main,[role=main]", "[class*=subtitle],[class*=subheadline],.dek,.standfirst", "[rel=author],[class*=author],[class*=byline]")
+    private val profiles = mapOf(
+        "g1.globo.com" to ExtractionProfile("G1", "article,main,[data-testid*=article-body],[class*=content-text],.content", "[class*=subtitle],[class*=subheadline],.content-headline", "[rel=author],[class*=author],[class*=byline]"),
+        "uol.com.br" to ExtractionProfile("UOL", "article,main,[data-testid*=article-body],[class*=article-body]", "[class*=subtitle],[class*=subheadline],.subheadline", "[rel=author],[class*=author],[class*=byline]"),
+        "theverge.com" to ExtractionProfile("TheVerge", "[data-testid='article-body'],[data-testid='article-content'],.duet--article--article-body-component,.duet--article--article-body", "[class*=dek],[class*=subtitle]", "[rel=author],[class*=byline]"),
+        "bbc.com" to ExtractionProfile("BBC", "article,[data-component=text-block],main", "[data-component=standfirst],.ssrcss-1q0x1qg-StyledSummary", "[rel=author],[class*=byline]"),
+        "reuters.com" to ExtractionProfile("Reuters", "article,[data-testid=article-body],main", "[data-testid=Heading],.article-header__sub-title", "[rel=author],[class*=author]")
+    )
+    fun forUrl(url: String): ExtractionProfile {
+        val host = runCatching { URI(url).host.orEmpty().removePrefix("www.").lowercase() }.getOrDefault("")
+        return profiles.entries.firstOrNull { host == it.key || host.endsWith(".${it.key}") }?.value ?: generic
+    }
 }
