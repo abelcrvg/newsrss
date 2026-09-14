@@ -25,17 +25,14 @@ class SourceStore(context: Context) {
                     val storedLanguage = runCatching { SourceLanguage.valueOf(item.optString("language")) }.getOrDefault(SourceLanguage.AUTO)
                     val category = if (storedCategory == NewsCategory.NEWS) inferred.category else storedCategory
                     val language = if (storedLanguage == SourceLanguage.AUTO) inferred.language else storedLanguage
-                    add(
-                        FeedSource(
-                            id = item.getString("id"),
-                            name = item.getString("name"),
-                            siteUrl = siteUrl,
-                            feedUrl = item.optString("feedUrl").takeIf { it.isNotBlank() },
-                            category = category,
-                            language = language,
-                            enabled = item.optBoolean("enabled", true)
-                        )
-                    )
+                    val interval = item.optLong("refreshIntervalMinutes", FeedSource.DEFAULT_REFRESH_MINUTES)
+                        .coerceIn(5L, 120L)
+                    add(FeedSource(
+                        id = item.getString("id"), name = item.getString("name"), siteUrl = siteUrl,
+                        feedUrl = item.optString("feedUrl").takeIf { it.isNotBlank() },
+                        category = category, language = language,
+                        enabled = item.optBoolean("enabled", true), refreshIntervalMinutes = interval
+                    ))
                 }
             }
             val storedIds = stored.map { it.id }.toSet()
@@ -46,17 +43,16 @@ class SourceStore(context: Context) {
     fun save(sources: List<FeedSource>) {
         val array = JSONArray()
         sources.forEach { source ->
-            array.put(
-                JSONObject().apply {
-                    put("id", source.id)
-                    put("name", source.name)
-                    put("siteUrl", source.siteUrl)
-                    put("feedUrl", source.feedUrl ?: "")
-                    put("category", source.category.name)
-                    put("language", source.language.name)
-                    put("enabled", source.enabled)
-                }
-            )
+            array.put(JSONObject().apply {
+                put("id", source.id)
+                put("name", source.name)
+                put("siteUrl", source.siteUrl)
+                put("feedUrl", source.feedUrl ?: "")
+                put("category", source.category.name)
+                put("language", source.language.name)
+                put("enabled", source.enabled)
+                put("refreshIntervalMinutes", source.refreshIntervalMinutes)
+            })
         }
         prefs.edit().putString(KEY_SOURCES, array.toString()).apply()
     }
