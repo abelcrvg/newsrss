@@ -13,12 +13,7 @@ import java.time.format.DateTimeFormatter
 
 class JsoupArticleExtractor : ArticleExtractor {
     override suspend fun extract(url: String): Result<Article> = runCatching {
-        val document = Jsoup.connect(url)
-            .userAgent(USER_AGENT)
-            .referrer("https://www.google.com/")
-            .timeout(20_000)
-            .followRedirects(true)
-            .get()
+        val document = Jsoup.connect(url).userAgent(USER_AGENT).referrer("https://www.google.com/").timeout(20_000).followRedirects(true).get()
         val profile = ExtractionProfiles.forUrl(url)
         document.select("script,style,noscript,iframe,nav,footer,header,aside,form,.advertisement,.ad,.ads,.social-share,.related-content,.newsletter,.comments").remove()
         val title = document.select("meta[property=og:title]").attr("content").ifBlank { document.select("h1").firstOrNull()?.text().orEmpty() }.ifBlank { document.title() }.trim()
@@ -39,18 +34,7 @@ class JsoupArticleExtractor : ArticleExtractor {
             if (wordCount < 250) add("short_article")
             if (extractionConfidence < 80) add("low_confidence")
         }
-        Article(
-            id = url,
-            sourceId = sourceIdFromUrl(url),
-            url = url,
-            title = title,
-            subtitle = subtitle,
-            author = author,
-            publishedAt = publishedAt,
-            heroImageUrl = hero,
-            blocks = blocks,
-            extraction = ExtractionMetadata(extractionConfidence, profile.name, wordCount, blocks.count { it is ArticleBlock.Image }, warnings)
-        )
+        Article(id = url, sourceId = sourceIdFromUrl(url), url = url, title = title, subtitle = subtitle, author = author, publishedAt = publishedAt, heroImageUrl = hero, blocks = blocks, extraction = ExtractionMetadata(extractionConfidence, profile.name, wordCount, blocks.count { it is ArticleBlock.Image }, warnings))
     }
 
     private fun findBestBody(document: org.jsoup.nodes.Document, profile: ExtractionProfile): Element {
@@ -69,7 +53,6 @@ class JsoupArticleExtractor : ArticleExtractor {
 
     private fun bodyScore(element: Element): Int = element.text().length + element.select("p").count { it.text().trim().length >= 40 } * 160 + element.select("h2,h3").size * 80
 
-    /** Extract the complete article body without imposing a character or paragraph cap. */
     private fun extractBlocks(body: Element, baseUrl: String): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
         body.select("script,style,noscript,iframe,svg,nav,footer,header,aside,form,.advertisement,.ad,.ads,.social-share,.related-content,.newsletter,.comments,video,audio,object,embed").remove()
@@ -100,8 +83,14 @@ class JsoupArticleExtractor : ArticleExtractor {
 
     private fun imageUrl(image: Element, baseUrl: String): String? {
         val srcset = image.attr("srcset").ifBlank { image.attr("data-srcset") }
-        val candidate = if (srcset.isNotBlank()) largestSrcSet(srcset) else null
-            ?: image.attr("data-src").ifBlank { image.attr("data-lazy-src") }.ifBlank { image.attr("data-original") }.ifBlank { image.attr("src") }
+        val candidate: String = if (srcset.isNotBlank()) {
+            largestSrcSet(srcset) ?: ""
+        } else {
+            image.attr("data-src")
+                .ifBlank { image.attr("data-lazy-src") }
+                .ifBlank { image.attr("data-original") }
+                .ifBlank { image.attr("src") }
+        }
         if (candidate.isBlank()) return null
         return runCatching { URI(baseUrl).resolve(candidate.trim()).toString() }.getOrNull()?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
     }
@@ -123,13 +112,7 @@ class JsoupArticleExtractor : ArticleExtractor {
     private fun sanitizeInlineHtml(element: Element): String? {
         val copy = element.clone()
         copy.select("script,style,iframe,svg,img,video,audio,object,embed").remove()
-        copy.select("*").forEach { node ->
-            node.removeAttr("class")
-            node.removeAttr("id")
-            node.removeAttr("style")
-            node.removeAttr("onclick")
-            node.removeAttr("onload")
-        }
+        copy.select("*").forEach { node -> node.removeAttr("class"); node.removeAttr("id"); node.removeAttr("style"); node.removeAttr("onclick"); node.removeAttr("onload") }
         return copy.text().replace(Regex("\\s+"), " ").trim().takeIf { it.length >= 2 }
     }
 
