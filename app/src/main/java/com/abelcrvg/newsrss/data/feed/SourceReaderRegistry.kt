@@ -17,6 +17,10 @@ class SourceReaderRegistry(
     private val theVergeCrawler: TheVergeSiteCrawler = TheVergeSiteCrawler(),
     private val skySportsCrawler: SkySportsSiteCrawler = SkySportsSiteCrawler(),
     private val espnCrawler: EspnSiteCrawler = EspnSiteCrawler(),
+    private val cnnCrawler: CnnBrasilSiteCrawler = CnnBrasilSiteCrawler(),
+    private val adrenalineCrawler: AdrenalineSiteCrawler = AdrenalineSiteCrawler(),
+    private val reutersCrawler: ReutersSiteCrawler = ReutersSiteCrawler(),
+    private val apCrawler: ApNewsSiteCrawler = ApNewsSiteCrawler(),
     private val rssCrawler: RssFeedCrawler = RssFeedCrawler()
 ) {
     suspend fun read(source: FeedSource): Result<List<FeedItem>> {
@@ -31,8 +35,21 @@ class SourceReaderRegistry(
             source.id == "the-verge" || host == "theverge.com" -> fallbackToGeneric(theVergeCrawler.crawl(source), source)
             source.id == "sky-sports" || host == "skysports.com" || host.endsWith(".skysports.com") -> combineWithRss(skySportsCrawler.crawl(source), source, listOf(source.feedUrl, "https://www.skysports.com/rss/12040", "https://www.skysports.com/rss/11095"))
             source.id == "espn-brasil" || host == "espn.com.br" || host.endsWith(".espn.com.br") -> combineWithRss(espnCrawler.crawl(source), source, listOf(source.feedUrl, "https://www.espn.com/espn/rss/soccer/news"))
+            source.id == "cnn-brasil" -> combineWithRss(cnnCrawler.crawl(source), source, listOf(source.feedUrl, "https://www.cnnbrasil.com.br/feed/"))
+            source.id == "adrenaline" -> adrenalineCrawler.crawl(source)
+            source.id == "reuters" -> fallbackToReuters(reutersCrawler.crawl(source), source)
+            source.id == "ap-news" -> fallbackToGeneric(apCrawler.crawl(source), source)
             else -> combineWithRss(homepageCrawler.crawl(source), source, listOf(source.feedUrl))
         }
+    }
+
+    private suspend fun fallbackToReuters(direct: Result<List<FeedItem>>, source: FeedSource): Result<List<FeedItem>> {
+        if (direct.isSuccess && direct.getOrNull().orEmpty().isNotEmpty()) return direct
+        // Reuters currently exposes its headlines inconsistently to unauthenticated RSS clients.
+        // Keep Reuters URLs as the source while using a search RSS fallback for availability.
+        val mirror = "https://news.google.com/rss/search?q=site%3Areuters.com&hl=en-US&gl=US&ceid=US%3Aen"
+        val rss = rssCrawler.crawl(source, listOf(mirror))
+        return if (rss.isSuccess && rss.getOrNull().orEmpty().isNotEmpty()) rss else direct
     }
 
     private suspend fun fallbackToGeneric(specialized: Result<List<FeedItem>>, source: FeedSource): Result<List<FeedItem>> {
@@ -55,10 +72,10 @@ class SourceReaderRegistry(
         rss.forEach { feedItem ->
             val previous = merged[feedItem.url]
             merged[feedItem.url] = if (previous == null) feedItem else previous.copy(
-                title = previous.title.ifBlank { feedItem.title },
-                summary = previous.summary?.takeIf { it.isNotBlank() } ?: feedItem.summary,
+                title = feedItem.title.ifBlank { previous.title },
+                summary = feedItem.summary?.takeIf { it.isNotBlank() } ?: previous.summary,
                 publishedAt = feedItem.publishedAt ?: previous.publishedAt,
-                imageUrl = previous.imageUrl?.takeIf { it.isNotBlank() } ?: feedItem.imageUrl
+                imageUrl = feedItem.imageUrl?.takeIf { it.isNotBlank() } ?: previous.imageUrl
             )
         }
         return Result.success(merged.values.sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title.lowercase() }).take(MAX_PUBLISHER_ITEMS))
