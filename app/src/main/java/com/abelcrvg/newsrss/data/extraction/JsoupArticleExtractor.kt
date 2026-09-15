@@ -97,17 +97,43 @@ class JsoupArticleExtractor : ArticleExtractor {
 
     private fun dedupeBlocks(blocks: List<ArticleBlock>): List<ArticleBlock> {
         val seen = HashSet<String>()
-        return blocks.filter { block ->
-            val key = when (block) {
-                is ArticleBlock.Paragraph -> "p:${block.text.text}"
-                is ArticleBlock.Heading -> "h:${block.text}"
-                is ArticleBlock.Quote -> "q:${block.text}"
-                is ArticleBlock.ListBlock -> "l:${block.items.joinToString("|")}"
-                is ArticleBlock.Image -> "i:${block.url}"
-            }.trim().lowercase()
-            seen.add(key)
+        val paragraphKeys = blocks
+            .filterIsInstance<ArticleBlock.Paragraph>()
+            .map { normalizeBlockText(it.text.text) }
+            .toHashSet()
+
+        return blocks.mapNotNull { block ->
+            val normalized = when (block) {
+                is ArticleBlock.Paragraph -> normalizeBlockText(block.text.text)
+                is ArticleBlock.Heading -> normalizeBlockText(block.text)
+                is ArticleBlock.Quote -> normalizeBlockText(block.text)
+                is ArticleBlock.ListBlock -> null
+                is ArticleBlock.Image -> block.url.trim().lowercase()
+            }
+
+            if (block is ArticleBlock.ListBlock) {
+                val uniqueItems = block.items.filter { normalizeBlockText(it) !in paragraphKeys }
+                if (uniqueItems.isEmpty()) return@mapNotNull null
+                val cleaned = block.copy(items = uniqueItems)
+                val key = "l:${uniqueItems.joinToString("|") { normalizeBlockText(it) }}"
+                if (seen.add(key)) cleaned else null
+            } else {
+                val key = when (block) {
+                    is ArticleBlock.Paragraph -> "p:$normalized"
+                    is ArticleBlock.Heading -> "h:$normalized"
+                    is ArticleBlock.Quote -> "q:$normalized"
+                    is ArticleBlock.Image -> "i:$normalized"
+                    is ArticleBlock.ListBlock -> error("unreachable")
+                }
+                if (seen.add(key)) block else null
+            }
         }
     }
+
+    private fun normalizeBlockText(text: String): String = text
+        .lowercase()
+        .replace(Regex("\\s+"), " ")
+        .trim()
 
     private fun sanitizeInlineHtml(element: Element): String? {
         val copy = element.clone()
