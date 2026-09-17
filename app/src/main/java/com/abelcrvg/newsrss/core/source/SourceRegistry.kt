@@ -29,7 +29,7 @@ object SourceRegistry {
         FeedSource("ign-brasil", "IGN Brasil", "https://br.ign.com", category = NewsCategory.GAMES, refreshIntervalMinutes = FeedSource.SLOW_REFRESH_MINUTES),
         FeedSource("adrenaline", "Adrenaline", "https://www.adrenaline.com.br", category = NewsCategory.GAMES, refreshIntervalMinutes = FeedSource.SLOW_REFRESH_MINUTES),
         FeedSource("the-enemy", "The Enemy", "https://www.theenemy.com.br", category = NewsCategory.GAMES, refreshIntervalMinutes = FeedSource.SLOW_REFRESH_MINUTES),
-        FeedSource("eurogamer-pt", "Eurogamer Portugal", "https://www.eurogamer.pt", feedUrl = "https://www.eurogamer.pt/feed", category = NewsCategory.GAMES, language = SourceLanguage.ENGLISH, refreshIntervalMinutes = FeedSource.SLOW_REFRESH_MINUTES),
+        FeedSource("eurogamer-pt", "Eurogamer Portugal", "https://www.eurogamer.pt", feedUrl = "https://www.eurogamer.pt/feed", category = NewsCategory.GAMES, language = SourceLanguage.PORTUGUESE, refreshIntervalMinutes = FeedSource.SLOW_REFRESH_MINUTES),
         FeedSource("gamespot", "GameSpot", "https://www.gamespot.com", feedUrl = "https://www.gamespot.com/feeds/news/", category = NewsCategory.GAMES, language = SourceLanguage.ENGLISH, refreshIntervalMinutes = FeedSource.SLOW_REFRESH_MINUTES),
         FeedSource("the-verge", "The Verge", "https://www.theverge.com", category = NewsCategory.ENGLISH, language = SourceLanguage.ENGLISH, refreshIntervalMinutes = FeedSource.SLOW_REFRESH_MINUTES),
         FeedSource("reuters", "Reuters", "https://www.reuters.com", category = NewsCategory.ENGLISH, language = SourceLanguage.ENGLISH),
