@@ -1,5 +1,6 @@
 package com.abelcrvg.newsrss.ui.theme
 
+import android.graphics.Typeface
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -18,6 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.fontFamily
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 
@@ -77,10 +80,7 @@ fun NewsRSSTheme(content: @Composable () -> Unit) {
         MaterialTheme(colorScheme = if (darkMode) DarkColors else LightColors, typography = typography) {
             Box(Modifier.fillMaxSize()) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { content() }
-                FloatingActionButton(
-                    onClick = {},
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)
-                ) {
+                FloatingActionButton(onClick = {}, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
                     NewsRSSSettingsButton(darkMode, fontScale, fontFamilyName) { dark, scale, selectedFamily ->
                         darkMode = dark
                         fontScale = scale
@@ -95,9 +95,12 @@ fun NewsRSSTheme(content: @Composable () -> Unit) {
     }
 }
 
-private fun storeFontFamily(name: String) = when (name) {
-    "Serif" -> androidx.compose.ui.text.font.FontFamily.Serif
-    "Mono" -> androidx.compose.ui.text.font.FontFamily.Monospace
-    "Cursive" -> androidx.compose.ui.text.font.FontFamily.Cursive
-    else -> androidx.compose.ui.text.font.FontFamily.SansSerif
+private fun storeFontFamily(name: String): FontFamily = when (name) {
+    "Serif", "Editorial" -> FontFamily.Serif
+    "Mono" -> FontFamily.Monospace
+    "Cursive" -> FontFamily.Cursive
+    "Compact" -> fontFamily(Typeface.create("sans-serif-condensed", Typeface.NORMAL))
+    "Light" -> fontFamily(Typeface.create("sans-serif-light", Typeface.NORMAL))
+    "Medium" -> fontFamily(Typeface.create("sans-serif-medium", Typeface.NORMAL))
+    else -> FontFamily.SansSerif
 }
