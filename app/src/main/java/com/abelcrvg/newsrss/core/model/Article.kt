@@ -9,7 +9,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import java.time.Instant
 
-/** Normalized article model. Paragraphs may retain sanitized inline HTML for reader formatting. */
 data class Article(
     val id: String,
     val sourceId: String,
@@ -39,9 +38,7 @@ sealed interface ArticleBlock {
         val text: AnnotatedString,
         val inlineHtml: String? = null
     ) : ArticleBlock {
-        constructor(text: String, inlineHtml: String? = null) : this(
-            annotatedParagraph(text, inlineHtml), inlineHtml
-        )
+        constructor(text: String, inlineHtml: String? = null) : this(annotatedParagraph(text, inlineHtml), inlineHtml)
     }
     data class Heading(val text: String, val level: Int = 2) : ArticleBlock
     data class Image(val url: String, val caption: String? = null, val altText: String? = null) : ArticleBlock
@@ -49,7 +46,7 @@ sealed interface ArticleBlock {
     data class ListBlock(val items: List<String>, val ordered: Boolean = false) : ArticleBlock
 }
 
-private data class InlineFrame(val tag: String, val style: SpanStyle)
+private data class InlineFrame(val tag: String, val style: SpanStyle, val href: String? = null)
 
 private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedString {
     if (inlineHtml.isNullOrBlank()) return AnnotatedString(text)
@@ -63,7 +60,10 @@ private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedStri
                 val start = length
                 append(stripInlineTags(value))
                 if (length == start) return
-                stack.forEach { frame -> addStyle(frame.style, start, length) }
+                stack.forEach { frame ->
+                    addStyle(frame.style, start, length)
+                    frame.href?.let { addStringAnnotation("URL", it, start, length) }
+                }
             }
             tagRegex.findAll(inlineHtml).forEach { match ->
                 appendSegment(inlineHtml.substring(cursor, match.range.first))
@@ -71,14 +71,16 @@ private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedStri
                 val tag = match.groupValues[2].lowercase()
                 val attributes = match.groupValues.getOrNull(3).orEmpty()
                 if (!closing) {
+                    val href = if (tag == "a") extractAttribute(attributes, "href") else null
                     val style = when (tag) {
-                        "strong", "b" -> SpanStyle(fontWeight = FontWeight.Bold)
-                        "em", "i" -> SpanStyle(fontStyle = FontStyle.Italic)
-                        "u", "a" -> SpanStyle(textDecoration = TextDecoration.Underline)
+                        "strong", "b" -> parseInlineStyle(attributes).merge(SpanStyle(fontWeight = FontWeight.Bold))
+                        "em", "i" -> parseInlineStyle(attributes).merge(SpanStyle(fontStyle = FontStyle.Italic))
+                        "u" -> parseInlineStyle(attributes).merge(SpanStyle(textDecoration = TextDecoration.Underline))
+                        "a" -> parseInlineStyle(attributes).merge(SpanStyle(textDecoration = TextDecoration.Underline))
                         "span" -> parseInlineStyle(attributes)
                         else -> SpanStyle()
                     }
-                    stack.addLast(InlineFrame(tag, style))
+                    stack.addLast(InlineFrame(tag, style, href))
                 } else {
                     val index = stack.indexOfLast { it.tag == tag }
                     if (index >= 0) stack.removeAt(index)
@@ -90,8 +92,12 @@ private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedStri
     }.getOrElse { AnnotatedString(text) }
 }
 
+private fun extractAttribute(attributes: String, name: String): String? =
+    Regex("""(?:^|\s)$name\s*=\s*[\"']([^\"']+)[\"']""", RegexOption.IGNORE_CASE)
+        .find(attributes)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+
 private fun parseInlineStyle(attributes: String): SpanStyle {
-    val rawStyle = Regex("(?:^|\\s)style\\s*=\\s*[\\\"']([^\\\"']*)[\\\"']", RegexOption.IGNORE_CASE)
+    val rawStyle = Regex("""(?:^|\s)style\s*=\s*[\"']([^\"']*)[\"']""", RegexOption.IGNORE_CASE)
         .find(attributes)?.groupValues?.getOrNull(1).orEmpty()
     if (rawStyle.isBlank()) return SpanStyle()
     var color: Color? = null
@@ -113,11 +119,22 @@ private fun parseInlineStyle(attributes: String): SpanStyle {
 
 private fun parseCssColor(value: String): Color? {
     val v = value.trim().lowercase()
-    val named = mapOf("red" to Color(0xFFF44336), "darkred" to Color(0xFF8B0000), "crimson" to Color(0xFFDC143C), "blue" to Color(0xFF0000FF), "green" to Color(0xFF008000), "black" to Color.Black, "white" to Color.White, "gray" to Color.Gray, "grey" to Color.Gray, "orange" to Color(0xFFFF9800), "yellow" to Color(0xFFFFFF00), "purple" to Color(0xFF800080))
+    val named = mapOf(
+        "red" to Color(0xFFF44336), "darkred" to Color(0xFF8B0000), "crimson" to Color(0xFFDC143C),
+        "blue" to Color(0xFF0000FF), "green" to Color(0xFF008000), "black" to Color.Black,
+        "white" to Color.White, "gray" to Color.Gray, "grey" to Color.Gray, "orange" to Color(0xFFFF9800),
+        "yellow" to Color(0xFFFFFF00), "purple" to Color(0xFF800080)
+    )
     named[v]?.let { return it }
     if (v.startsWith("#")) return runCatching { Color(android.graphics.Color.parseColor(v)) }.getOrNull()
     val rgb = Regex("rgb\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)").find(v)
     return rgb?.let { Color(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].toInt()) }
 }
 
-private fun stripInlineTags(value: String): String = value.replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n").replace(Regex("<[^>]+>"), "").replace("&nbsp;", " ").replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'")
+private fun stripInlineTags(value: String): String = value
+    .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
+    .replace(Regex("<[^>]+>"), "")
+    .replace("&nbsp;", " ")
+    .replace("&amp;", "&")
+    .replace("&quot;", "\"")
+    .replace("&#39;", "'")
