@@ -72,10 +72,10 @@ class JsoupArticleExtractor : ArticleExtractor {
                     if (!emittedImages.add(imageUrl)) return@forEach
                     result += ArticleBlock.Image(imageUrl, altText = element.attr("alt").trim().takeIf { it.isNotBlank() })
                 }
-                "h1", "h2", "h3", "h4", "h5", "h6" -> sanitizeInlineHtml(element)?.let { result += ArticleBlock.Heading(it, element.tagName().drop(1).toInt()) }
-                "blockquote" -> sanitizeInlineHtml(element)?.let { result += ArticleBlock.Quote(it, null) }
-                "li" -> sanitizeInlineHtml(element)?.let { result += ArticleBlock.ListBlock(listOf(it), false) }
-                else -> sanitizeInlineHtml(element)?.takeIf { it.length >= 40 }?.let { result += ArticleBlock.Paragraph(it) }
+                "h1", "h2", "h3", "h4", "h5", "h6" -> sanitizeInlineHtml(element, baseUrl)?.let { result += ArticleBlock.Heading(it, element.tagName().drop(1).toInt()) }
+                "blockquote" -> sanitizeInlineHtml(element, baseUrl)?.let { result += ArticleBlock.Quote(it, null) }
+                "li" -> sanitizeInlineHtml(element, baseUrl)?.let { result += ArticleBlock.ListBlock(listOf(it), false) }
+                else -> sanitizeInlineHtml(element, baseUrl)?.takeIf { it.length >= 40 }?.let { result += ArticleBlock.Paragraph(it) }
             }
         }
         return dedupeBlocks(result)
@@ -83,25 +83,14 @@ class JsoupArticleExtractor : ArticleExtractor {
 
     private fun imageUrl(image: Element, baseUrl: String): String? {
         val srcset = image.attr("srcset").ifBlank { image.attr("data-srcset") }
-        val candidate: String = if (srcset.isNotBlank()) {
-            largestSrcSet(srcset) ?: ""
-        } else {
-            image.attr("data-src")
-                .ifBlank { image.attr("data-lazy-src") }
-                .ifBlank { image.attr("data-original") }
-                .ifBlank { image.attr("src") }
-        }
+        val candidate: String = if (srcset.isNotBlank()) largestSrcSet(srcset) ?: "" else image.attr("data-src").ifBlank { image.attr("data-lazy-src") }.ifBlank { image.attr("data-original") }.ifBlank { image.attr("src") }
         if (candidate.isBlank()) return null
         return runCatching { URI(baseUrl).resolve(candidate.trim()).toString() }.getOrNull()?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
     }
 
     private fun dedupeBlocks(blocks: List<ArticleBlock>): List<ArticleBlock> {
         val seen = HashSet<String>()
-        val paragraphKeys = blocks
-            .filterIsInstance<ArticleBlock.Paragraph>()
-            .map { normalizeBlockText(it.text.text) }
-            .toHashSet()
-
+        val paragraphKeys = blocks.filterIsInstance<ArticleBlock.Paragraph>().map { normalizeBlockText(it.text.text) }.toHashSet()
         return blocks.mapNotNull { block ->
             val normalized = when (block) {
                 is ArticleBlock.Paragraph -> normalizeBlockText(block.text.text)
@@ -110,7 +99,6 @@ class JsoupArticleExtractor : ArticleExtractor {
                 is ArticleBlock.ListBlock -> null
                 is ArticleBlock.Image -> block.url.trim().lowercase()
             }
-
             if (block is ArticleBlock.ListBlock) {
                 val uniqueItems = block.items.filter { normalizeBlockText(it) !in paragraphKeys }
                 if (uniqueItems.isEmpty()) return@mapNotNull null
@@ -130,16 +118,66 @@ class JsoupArticleExtractor : ArticleExtractor {
         }
     }
 
-    private fun normalizeBlockText(text: String): String = text
-        .lowercase()
-        .replace(Regex("\\s+"), " ")
-        .trim()
+    private fun normalizeBlockText(text: String): String = text.lowercase().replace(Regex("\\s+"), " ").trim()
 
-    private fun sanitizeInlineHtml(element: Element): String? {
+    /** Keeps semantic inline tags and safe style information instead of flattening everything to plain text. */
+    private fun sanitizeInlineHtml(element: Element, baseUrl: String): String? {
         val copy = element.clone()
         copy.select("script,style,iframe,svg,img,video,audio,object,embed").remove()
-        copy.select("*").forEach { node -> node.removeAttr("class"); node.removeAttr("id"); node.removeAttr("style"); node.removeAttr("onclick"); node.removeAttr("onload") }
-        return copy.text().replace(Regex("\\s+"), " ").trim().takeIf { it.length >= 2 }
+        val accent = sourceAccentHex(baseUrl)
+        val allowed = setOf("strong", "b", "em", "i", "u", "a", "span", "br")
+        copy.select("*").forEach { node ->
+            node.removeAttr("class")
+            node.removeAttr("id")
+            node.removeAttr("onclick")
+            node.removeAttr("onload")
+            node.removeAttr("onmouseover")
+            node.removeAttr("onerror")
+            if (node.tagName().lowercase() !in allowed) {
+                node.unwrap()
+            } else if (node.tagName().equals("a", true)) {
+                val href = node.attr("href")
+                val existing = node.attr("style")
+                node.clearAttributes()
+                if (href.isNotBlank()) node.attr("href", href)
+                val hasColor = Regex("(?:^|;)\\s*color\\s*:", RegexOption.IGNORE_CASE).containsMatchIn(existing)
+                node.attr("style", if (hasColor) "$existing; text-decoration:underline;" else "$existing; color:$accent; text-decoration:underline;")
+            } else if (node.tagName().equals("strong", true) || node.tagName().equals("b", true) || node.tagName().equals("span", true)) {
+                val existing = node.attr("style")
+                if (existing.isNotBlank()) node.attr("style", sanitizeStyle(existing))
+            }
+        }
+        val html = copy.html().replace(Regex("\\s+"), " ").trim()
+        return html.takeIf { Jsoup.parse(it).text().trim().length >= 2 }
+    }
+
+    private fun sanitizeStyle(style: String): String = style.split(';').mapNotNull { declaration ->
+        val parts = declaration.split(':', limit = 2)
+        if (parts.size != 2) return@mapNotNull null
+        val property = parts[0].trim().lowercase()
+        val value = parts[1].trim()
+        when (property) {
+            "color", "font-weight", "text-decoration" -> "$property:$value"
+            else -> null
+        }
+    }.joinToString(";")
+
+    private fun sourceAccentHex(url: String): String {
+        val host = runCatching { URI(url).host.orEmpty().removePrefix("www.").lowercase() }.getOrDefault("")
+        return when {
+            host == "g1.globo.com" || host.endsWith(".g1.globo.com") || host.contains("globo.com") -> "#E51B23"
+            host == "ge.globo.com" || host.endsWith(".ge.globo.com") -> "#008A45"
+            host == "tecmundo.com.br" || host.endsWith(".tecmundo.com.br") -> "#1683FF"
+            host == "voxel.com.br" || host.endsWith(".voxel.com.br") -> "#E31B23"
+            host == "cnnbrasil.com.br" || host.endsWith(".cnnbrasil.com.br") -> "#CC0000"
+            host == "uol.com.br" || host.endsWith(".uol.com.br") -> "#1677FF"
+            host == "theverge.com" || host.endsWith(".theverge.com") -> "#111111"
+            host == "bbc.com" || host.endsWith(".bbc.com") -> "#B80000"
+            host == "reuters.com" || host.endsWith(".reuters.com") -> "#FF8000"
+            host == "espn.com.br" || host.endsWith(".espn.com.br") -> "#CC0000"
+            host == "skysports.com" || host.endsWith(".skysports.com") -> "#0072CE"
+            else -> "#6750A4"
+        }
     }
 
     private fun extractHeroImage(document: org.jsoup.nodes.Document, baseUrl: String): String? {
