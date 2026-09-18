@@ -12,7 +12,8 @@ import org.json.JSONObject
 class SourceStore(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    fun hasSavedSelection(): Boolean = prefs.contains(KEY_SOURCES)
+    /** True only after the user has explicitly completed the source-selection screen. */
+    fun hasSavedSelection(): Boolean = prefs.getBoolean(KEY_SELECTION_COMPLETED, false)
 
     fun load(defaults: List<FeedSource>): List<FeedSource> {
         val raw = prefs.getString(KEY_SOURCES, null) ?: return defaults
@@ -57,8 +58,13 @@ class SourceStore(context: Context) {
         prefs.edit().putString(KEY_SOURCES, array.toString()).apply()
     }
 
+    fun markSelectionCompleted() {
+        prefs.edit().putBoolean(KEY_SELECTION_COMPLETED, true).apply()
+    }
+
     private companion object {
         const val PREFS = "newsrss_sources"
         const val KEY_SOURCES = "sources"
+        const val KEY_SELECTION_COMPLETED = "selection_completed"
     }
 }
