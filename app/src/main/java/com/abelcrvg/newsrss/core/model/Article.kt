@@ -9,7 +9,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import java.time.Instant
 
-/** Normalized article model. Paragraphs may retain sanitized inline HTML for reader formatting. */
+/** Normalized article model. Paragraphs retain sanitized inline HTML for reader formatting. */
 data class Article(
     val id: String,
     val sourceId: String,
@@ -56,8 +56,9 @@ private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedStri
     return runCatching {
         buildAnnotatedString {
             var cursor = 0
-            val tagRegex = Regex("<(/?)(strong|b|em|i|u|a|span)(?:\\s+([^>]*))?>", RegexOption.IGNORE_CASE)
+            val tagRegex = Regex("<(/?)(strong|b|em|i|u|a|span|font)(?:\\s+([^>]*))?>", RegexOption.IGNORE_CASE)
             val stack = ArrayDeque<InlineFrame>()
+
             fun appendSegment(value: String) {
                 if (value.isEmpty()) return
                 val start = length
@@ -65,6 +66,7 @@ private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedStri
                 if (length == start) return
                 stack.forEach { frame -> addStyle(frame.style, start, length) }
             }
+
             tagRegex.findAll(inlineHtml).forEach { match ->
                 appendSegment(inlineHtml.substring(cursor, match.range.first))
                 val closing = match.groupValues[1] == "/"
@@ -75,8 +77,13 @@ private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedStri
                         "strong", "b" -> SpanStyle(fontWeight = FontWeight.Bold)
                         "em", "i" -> SpanStyle(fontStyle = FontStyle.Italic)
                         "u" -> SpanStyle(textDecoration = TextDecoration.Underline)
-                        "a" -> parseInlineStyle(attributes).merge(SpanStyle(textDecoration = TextDecoration.Underline))
-                        "span" -> parseInlineStyle(attributes)
+                        "a" -> parseInlineStyle(attributes).merge(
+                            SpanStyle(
+                                color = Color(0xFF1565C0),
+                                textDecoration = TextDecoration.Underline
+                            )
+                        )
+                        "span", "font" -> parseInlineStyle(attributes)
                         else -> SpanStyle()
                     }
                     stack.addLast(InlineFrame(tag, style))
@@ -94,31 +101,57 @@ private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedStri
 private fun parseInlineStyle(attributes: String): SpanStyle {
     val rawStyle = Regex("(?:^|\\s)style\\s*=\\s*[\\\"']([^\\\"']*)[\\\"']", RegexOption.IGNORE_CASE)
         .find(attributes)?.groupValues?.getOrNull(1).orEmpty()
-    if (rawStyle.isBlank()) return SpanStyle()
+
     var color: Color? = null
     var weight: FontWeight? = null
     var decoration: TextDecoration? = null
-    rawStyle.split(';').forEach { declaration ->
-        val parts = declaration.split(':', limit = 2)
-        if (parts.size != 2) return@forEach
-        val property = parts[0].trim().lowercase()
-        val value = parts[1].trim()
-        when (property) {
-            "color" -> parseCssColor(value)?.let { color = it }
-            "font-weight" -> if (value == "bold" || value.toIntOrNull()?.let { it >= 600 } == true) weight = FontWeight.Bold
-            "text-decoration" -> if (value.contains("underline", ignoreCase = true)) decoration = TextDecoration.Underline
+
+    if (rawStyle.isNotBlank()) {
+        rawStyle.split(';').forEach { declaration ->
+            val parts = declaration.split(':', limit = 2)
+            if (parts.size != 2) return@forEach
+            val property = parts[0].trim().lowercase()
+            val value = parts[1].trim()
+            when (property) {
+                "color" -> parseCssColor(value)?.let { color = it }
+                "font-weight" -> if (value == "bold" || value.toIntOrNull()?.let { it >= 600 } == true) weight = FontWeight.Bold
+                "text-decoration" -> if (value.contains("underline", ignoreCase = true)) decoration = TextDecoration.Underline
+            }
         }
     }
-    return SpanStyle(color = color ?: Color.Unspecified, fontWeight = weight, textDecoration = decoration)
+
+    // Some publishers still use the legacy <font color="..."> attribute.
+    if (color == null) {
+        Regex("(?:^|\\s)color\\s*=\\s*[\\\"']?([^\\s\\\"'>]+)", RegexOption.IGNORE_CASE)
+            .find(attributes)?.groupValues?.getOrNull(1)?.let { parseCssColor(it) }?.let { color = it }
+    }
+
+    return SpanStyle(
+        color = color ?: Color.Unspecified,
+        fontWeight = weight,
+        textDecoration = decoration
+    )
 }
 
 private fun parseCssColor(value: String): Color? {
     val v = value.trim().lowercase()
-    val named = mapOf("red" to Color(0xFFF44336), "darkred" to Color(0xFF8B0000), "crimson" to Color(0xFFDC143C), "blue" to Color(0xFF0000FF), "green" to Color(0xFF008000), "black" to Color.Black, "white" to Color.White, "gray" to Color.Gray, "grey" to Color.Gray, "orange" to Color(0xFFFF9800), "yellow" to Color(0xFFFFFF00), "purple" to Color(0xFF800080))
+    val named = mapOf(
+        "red" to Color(0xFFF44336), "darkred" to Color(0xFF8B0000), "crimson" to Color(0xFFDC143C),
+        "blue" to Color(0xFF0000FF), "green" to Color(0xFF008000), "black" to Color.Black,
+        "white" to Color.White, "gray" to Color.Gray, "grey" to Color.Gray,
+        "orange" to Color(0xFFFF9800), "yellow" to Color(0xFFFFFF00), "purple" to Color(0xFF800080)
+    )
     named[v]?.let { return it }
     if (v.startsWith("#")) return runCatching { Color(android.graphics.Color.parseColor(v)) }.getOrNull()
     val rgb = Regex("rgb\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)").find(v)
     return rgb?.let { Color(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].toInt()) }
 }
 
-private fun stripInlineTags(value: String): String = value.replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n").replace(Regex("<[^>]+>"), "").replace("&nbsp;", " ").replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'")
+private fun stripInlineTags(value: String): String =
+    value
+        .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
+        .replace(Regex("<[^>]+>"), "")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
