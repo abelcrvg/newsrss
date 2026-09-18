@@ -12,11 +12,13 @@ import org.json.JSONObject
 class SourceStore(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
+    fun hasSavedSelection(): Boolean = prefs.contains(KEY_SOURCES)
+
     fun load(defaults: List<FeedSource>): List<FeedSource> {
         val raw = prefs.getString(KEY_SOURCES, null) ?: return defaults
         return runCatching {
             val array = JSONArray(raw)
-            val stored = buildList {
+            buildList {
                 for (i in 0 until array.length()) {
                     val item = array.getJSONObject(i)
                     val siteUrl = item.getString("siteUrl")
@@ -35,8 +37,6 @@ class SourceStore(context: Context) {
                     ))
                 }
             }
-            val storedIds = stored.map { it.id }.toSet()
-            stored + defaults.filterNot { it.id in storedIds }
         }.getOrDefault(defaults)
     }
 
