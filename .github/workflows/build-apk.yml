@@ -46,9 +46,10 @@ jobs:
           retention-days: 7
 
       - name: Publish latest APK
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: latest-apk
+          target_commitish: ${{ github.sha }}
           name: NewsRSS — APK mais recente
           body: APK de teste mais recente gerado automaticamente pelo projeto NewsRSS.
           prerelease: true
