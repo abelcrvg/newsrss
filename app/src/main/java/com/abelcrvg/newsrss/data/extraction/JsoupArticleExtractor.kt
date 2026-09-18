@@ -83,25 +83,14 @@ class JsoupArticleExtractor : ArticleExtractor {
 
     private fun imageUrl(image: Element, baseUrl: String): String? {
         val srcset = image.attr("srcset").ifBlank { image.attr("data-srcset") }
-        val candidate: String = if (srcset.isNotBlank()) {
-            largestSrcSet(srcset) ?: ""
-        } else {
-            image.attr("data-src")
-                .ifBlank { image.attr("data-lazy-src") }
-                .ifBlank { image.attr("data-original") }
-                .ifBlank { image.attr("src") }
-        }
+        val candidate: String = if (srcset.isNotBlank()) largestSrcSet(srcset) ?: "" else image.attr("data-src").ifBlank { image.attr("data-lazy-src") }.ifBlank { image.attr("data-original") }.ifBlank { image.attr("src") }
         if (candidate.isBlank()) return null
         return runCatching { URI(baseUrl).resolve(candidate.trim()).toString() }.getOrNull()?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
     }
 
     private fun dedupeBlocks(blocks: List<ArticleBlock>): List<ArticleBlock> {
         val seen = HashSet<String>()
-        val paragraphKeys = blocks
-            .filterIsInstance<ArticleBlock.Paragraph>()
-            .map { normalizeBlockText(it.text.text) }
-            .toHashSet()
-
+        val paragraphKeys = blocks.filterIsInstance<ArticleBlock.Paragraph>().map { normalizeBlockText(it.text.text) }.toHashSet()
         return blocks.mapNotNull { block ->
             val normalized = when (block) {
                 is ArticleBlock.Paragraph -> normalizeBlockText(block.text.text)
@@ -110,7 +99,6 @@ class JsoupArticleExtractor : ArticleExtractor {
                 is ArticleBlock.ListBlock -> null
                 is ArticleBlock.Image -> block.url.trim().lowercase()
             }
-
             if (block is ArticleBlock.ListBlock) {
                 val uniqueItems = block.items.filter { normalizeBlockText(it) !in paragraphKeys }
                 if (uniqueItems.isEmpty()) return@mapNotNull null
@@ -130,16 +118,18 @@ class JsoupArticleExtractor : ArticleExtractor {
         }
     }
 
-    private fun normalizeBlockText(text: String): String = text
-        .lowercase()
-        .replace(Regex("\\s+"), " ")
-        .trim()
+    private fun normalizeBlockText(text: String): String = text.lowercase().replace(Regex("\\s+"), " ").trim()
 
     private fun sanitizeInlineHtml(element: Element): String? {
         val copy = element.clone()
         copy.select("script,style,iframe,svg,img,video,audio,object,embed").remove()
-        copy.select("*").forEach { node -> node.removeAttr("class"); node.removeAttr("id"); node.removeAttr("style"); node.removeAttr("onclick"); node.removeAttr("onload") }
-        return copy.text().replace(Regex("\\s+"), " ").trim().takeIf { it.length >= 2 }
+        copy.select("*").forEach { node ->
+            node.removeAttr("class")
+            node.removeAttr("id")
+            node.removeAttr("onclick")
+            node.removeAttr("onload")
+        }
+        return copy.html().replace(Regex("\\s+"), " ").trim().takeIf { Jsoup.parse(it).text().length >= 2 }
     }
 
     private fun extractHeroImage(document: org.jsoup.nodes.Document, baseUrl: String): String? {
