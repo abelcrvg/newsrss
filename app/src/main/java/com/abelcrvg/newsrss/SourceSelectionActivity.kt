@@ -48,6 +48,7 @@ class SourceSelectionActivity : ComponentActivity() {
             NewsRSSTheme {
                 SourceSelectionScreen { selected ->
                     sourceStore.save(selected)
+                    sourceStore.markSelectionCompleted()
                     openNews()
                 }
             }
