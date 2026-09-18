@@ -53,6 +53,8 @@ class JsoupArticleExtractor : ArticleExtractor {
 
     private fun bodyScore(element: Element): Int = element.text().length + element.select("p").count { it.text().trim().length >= 40 } * 160 + element.select("h2,h3").size * 80
 
+    private data class SanitizedInline(val text: String, val html: String)
+
     private fun extractBlocks(body: Element, baseUrl: String): List<ArticleBlock> {
         val result = mutableListOf<ArticleBlock>()
         body.select("script,style,noscript,iframe,svg,nav,footer,header,aside,form,.advertisement,.ad,.ads,.social-share,.related-content,.newsletter,.comments,video,audio,object,embed").remove()
@@ -72,10 +74,14 @@ class JsoupArticleExtractor : ArticleExtractor {
                     if (!emittedImages.add(imageUrl)) return@forEach
                     result += ArticleBlock.Image(imageUrl, altText = element.attr("alt").trim().takeIf { it.isNotBlank() })
                 }
-                "h1", "h2", "h3", "h4", "h5", "h6" -> sanitizeInlineHtml(element)?.let { result += ArticleBlock.Heading(it, element.tagName().drop(1).toInt()) }
-                "blockquote" -> sanitizeInlineHtml(element)?.let { result += ArticleBlock.Quote(it, null) }
-                "li" -> sanitizeInlineHtml(element)?.let { result += ArticleBlock.ListBlock(listOf(it), false) }
-                else -> sanitizeInlineHtml(element)?.takeIf { it.length >= 40 }?.let { result += ArticleBlock.Paragraph(it) }
+                "h1", "h2", "h3", "h4", "h5", "h6" -> sanitizeInlineHtml(element)?.let { result += ArticleBlock.Heading(it.text, element.tagName().drop(1).toInt()) }
+                "blockquote" -> sanitizeInlineHtml(element)?.let { result += ArticleBlock.Quote(it.text, null) }
+                "li" -> {
+                    // A <li> that contains a <p> would otherwise emit the same text twice.
+                    if (element.selectFirst("p") != null) return@forEach
+                    sanitizeInlineHtml(element)?.let { result += ArticleBlock.ListBlock(listOf(it.text), false) }
+                }
+                else -> sanitizeInlineHtml(element)?.takeIf { it.text.length >= 40 }?.let { result += ArticleBlock.Paragraph(it.text, it.html) }
             }
         }
         return dedupeBlocks(result)
@@ -120,7 +126,7 @@ class JsoupArticleExtractor : ArticleExtractor {
 
     private fun normalizeBlockText(text: String): String = text.lowercase().replace(Regex("\\s+"), " ").trim()
 
-    private fun sanitizeInlineHtml(element: Element): String? {
+    private fun sanitizeInlineHtml(element: Element): SanitizedInline? {
         val copy = element.clone()
         copy.select("script,style,iframe,svg,img,video,audio,object,embed").remove()
         copy.select("*").forEach { node ->
@@ -128,8 +134,11 @@ class JsoupArticleExtractor : ArticleExtractor {
             node.removeAttr("id")
             node.removeAttr("onclick")
             node.removeAttr("onload")
+            node.attributes().filter { it.key.startsWith("on", ignoreCase = true) }.forEach { node.removeAttr(it.key) }
         }
-        return copy.html().replace(Regex("\\s+"), " ").trim().takeIf { Jsoup.parse(it).text().length >= 2 }
+        val html = copy.html().replace(Regex("\\s+"), " ").trim()
+        val text = Jsoup.parse(html).text().replace(Regex("\\s+"), " ").trim()
+        return SanitizedInline(text, html).takeIf { it.text.length >= 2 }
     }
 
     private fun extractHeroImage(document: org.jsoup.nodes.Document, baseUrl: String): String? {
