@@ -74,7 +74,8 @@ private fun annotatedParagraph(text: String, inlineHtml: String?): AnnotatedStri
                     val style = when (tag) {
                         "strong", "b" -> SpanStyle(fontWeight = FontWeight.Bold)
                         "em", "i" -> SpanStyle(fontStyle = FontStyle.Italic)
-                        "u", "a" -> SpanStyle(textDecoration = TextDecoration.Underline)
+                        "u" -> SpanStyle(textDecoration = TextDecoration.Underline)
+                        "a" -> parseInlineStyle(attributes).merge(SpanStyle(textDecoration = TextDecoration.Underline))
                         "span" -> parseInlineStyle(attributes)
                         else -> SpanStyle()
                     }
