@@ -1,5 +1,7 @@
 package com.abelcrvg.newsrss
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -13,6 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -271,9 +274,12 @@ private fun NewsRSSApp() {
         val shown = if (translatedArticle != null) translatedArticle!! else article!!
         ReaderContent(
             article = shown,
+            articleUrl = currentItem!!.url,
             saved = currentItem!!.url in savedUrls,
             onBack = { article = null; translatedArticle = null; translating = false },
             onToggleSaved = { toggleSaved(currentItem!!) },
+            onOpenExternal = { openExternal(context, currentItem!!.url) },
+            onShare = { shareArticle(context, cleanNewsTitle(shown.title, shown.sourceId), currentItem!!.url) },
             canTranslate = canTranslate,
             translated = translatedArticle != null,
             translating = translating,
@@ -303,29 +309,31 @@ private fun NewsRSSApp() {
         NavigationBarItem(tab == 2, { tab = 2 }, icon = { Text("★") }, label = { Text("Ler depois") })
     } }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(16.dp, 14.dp, 16.dp, 96.dp)) {
-                item {
-                    HomeHeader(
-                        loading = refreshing,
-                        initialized = initialized,
-                        newItems = newItems,
-                        active = sources.count { it.enabled },
-                        coverageCount = viewState.clusters.size,
-                        failedCount = failedSources.size,
-                        lastUpdatedAt = lastUpdatedAt,
-                        onSources = { manageSources = true },
-                        onRefresh = { refresh() }
-                    )
+            PullToRefreshBox(isRefreshing = refreshing, onRefresh = { if (tab == 0) refresh() }, modifier = Modifier.fillMaxSize()) {
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(16.dp, 14.dp, 16.dp, 96.dp)) {
+                    item {
+                        HomeHeader(
+                            loading = refreshing,
+                            initialized = initialized,
+                            newItems = newItems,
+                            active = sources.count { it.enabled },
+                            coverageCount = viewState.clusters.size,
+                            failedCount = failedSources.size,
+                            lastUpdatedAt = lastUpdatedAt,
+                            onSources = { manageSources = true },
+                            onRefresh = { refresh() }
+                        )
+                    }
+                    if (tab == 0) item { CategoryFilter(category) { category = it } } else item { Text(if (tab == 1) "Notícias lidas" else "Ler depois", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+                    if (opening) item { LoadingCard("Abrindo notícia…", true) }
+                    if (refreshing) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+                    if (!initialized) item { LoadingCard("Preparando seu feed…") }
+                    else if (tab == 0 && viewState.rows.isEmpty() && !refreshing) item { EmptyState(0) }
+                    else if (tab != 0 && displayArticles.isEmpty()) item { EmptyState(tab) }
+                    else if (tab == 0) items(viewState.rows, key = { it.key }) { row -> when (row) { is FeedRow.Story -> ClusterCard(row.cluster) { coverage = row.cluster }; is FeedRow.ArticleRow -> NewsCard(row.item, sourceById[row.item.sourceId], row.item.url in savedUrls, row.item.url in readUrls, viewState.rows.firstOrNull() == row) { openItem(row.item) } } }
+                    else items(displayArticles, key = { it.id }) { news -> NewsCard(news, sourceById[news.sourceId], news.url in savedUrls, news.url in readUrls, displayArticles.firstOrNull()?.id == news.id) { openItem(news) } }
+                    error?.let { message -> if (tab != 0 || viewState.rows.isNotEmpty()) item { InlineError(message) { refresh() } } }
                 }
-                if (tab == 0) item { CategoryFilter(category) { category = it } } else item { Text(if (tab == 1) "Notícias lidas" else "Ler depois", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
-                if (opening) item { LoadingCard("Abrindo notícia…", true) }
-                if (refreshing) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
-                if (!initialized) item { LoadingCard("Preparando seu feed…") }
-                else if (tab == 0 && viewState.rows.isEmpty() && !refreshing) item { EmptyState(0) }
-                else if (tab != 0 && displayArticles.isEmpty()) item { EmptyState(tab) }
-                else if (tab == 0) items(viewState.rows, key = { it.key }) { row -> when (row) { is FeedRow.Story -> ClusterCard(row.cluster) { coverage = row.cluster }; is FeedRow.ArticleRow -> NewsCard(row.item, sourceById[row.item.sourceId], row.item.url in savedUrls, row.item.url in readUrls, viewState.rows.firstOrNull() == row) { openItem(row.item) } } }
-                else items(displayArticles, key = { it.id }) { news -> NewsCard(news, sourceById[news.sourceId], news.url in savedUrls, news.url in readUrls, displayArticles.firstOrNull()?.id == news.id) { openItem(news) } }
-                error?.let { message -> if (tab != 0 || viewState.rows.isNotEmpty()) item { InlineError(message) { refresh() } } }
             }
             if (listState.firstVisibleItemIndex >= 6) SmallFloatingActionButton({ scope.launch { listState.animateScrollToItem(0) } }, Modifier.align(Alignment.BottomEnd).padding(16.dp)) { Text("↑", fontSize = 21.sp) }
         }
@@ -366,16 +374,16 @@ private data class InitialData(val sources: List<FeedSource>, val readUrls: Set<
 @Composable private fun CoverageContent(cluster: NewsCluster, sourceById: Map<String, FeedSource>, readUrls: Set<String>, savedUrls: Set<String>, onBack: () -> Unit, onOpen: (FeedItem) -> Unit) { Scaffold(topBar = { TopAppBar(title = { Text("Cobertura") }, navigationIcon = { IconButton(onClick = onBack) { Text("‹", fontSize = 32.sp) } }) }) { padding -> LazyColumn(Modifier.fillMaxSize().padding(padding), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 40.dp)) { item { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(cluster.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold); Text("${cluster.articles.size} matérias · ${cluster.sourceIds.size} fontes", color = MaterialTheme.colorScheme.onSurfaceVariant); if (cluster.isHot) Text("🔴 Assunto em desenvolvimento", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error); HorizontalDivider(Modifier.padding(top = 6.dp)) } }; items(cluster.articles, key = { "coverage-${it.id}" }) { item -> CoverageArticleRow(item, sourceById[item.sourceId], item.url in readUrls, item.url in savedUrls) { onOpen(item) } } } } }
 @Composable private fun CoverageArticleRow(item: FeedItem, source: FeedSource?, read: Boolean, saved: Boolean, onClick: () -> Unit) { Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(source?.name ?: sourceShortName(item.sourceId), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary); item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall) } }; Text(cleanNewsTitle(item.title, item.sourceId), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold); item.summary?.takeIf { it.isNotBlank() }?.let { Text(it, maxLines = 2, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { if (read) Text("✓ Lida", style = MaterialTheme.typography.labelSmall); if (saved) Text("★ Salvo", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) } } } }
 
-@Composable private fun NewsCard(item: FeedItem, source: FeedSource?, saved: Boolean, read: Boolean, featured: Boolean, onClick: () -> Unit) { val title = cleanNewsTitle(item.title, item.sourceId); val titleColor = if (read) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface; Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = MaterialTheme.shapes.large) { if (featured) Column { item.imageUrl?.let { AsyncImage(it, null, Modifier.fillMaxWidth().height(190.dp), contentScale = ContentScale.Crop) }; Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(source?.name ?: "Fonte", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall) } }; Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, lineHeight = 31.sp, color = titleColor); item.summary?.takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 23.sp) } } } else Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) { item.imageUrl?.let { AsyncImage(it, null, Modifier.size(96.dp, 76.dp), contentScale = ContentScale.Crop) }; Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(source?.name ?: "Fonte", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall) } }; Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, lineHeight = 21.sp, color = titleColor); if (saved) Text("★ Salvo", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall); if (read) Text("✓ Lida", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall) } } } }
+@Composable private fun NewsCard(item: FeedItem, source: FeedSource?, saved: Boolean, read: Boolean, featured: Boolean, onClick: () -> Unit) { val title = cleanNewsTitle(item.title, item.sourceId); val titleColor = if (read) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface; Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = MaterialTheme.shapes.large) { if (featured) Column { item.imageUrl?.takeIf { it.isNotBlank() }?.let { AsyncImage(it, null, Modifier.fillMaxWidth().height(190.dp), contentScale = ContentScale.Crop) }; Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(source?.name ?: "Fonte", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall) } }; Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, lineHeight = 31.sp, color = titleColor); item.summary?.takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 23.sp) } } } else Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) { item.imageUrl?.takeIf { it.isNotBlank() }?.let { AsyncImage(it, null, Modifier.size(96.dp, 76.dp), contentScale = ContentScale.Crop) }; Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(source?.name ?: "Fonte", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); item.publishedAt?.let { Text(publishedLabel(it), style = MaterialTheme.typography.labelSmall) } }; Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, lineHeight = 21.sp, color = titleColor); if (saved) Text("★ Salvo", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall); if (read) Text("✓ Lida", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall) } } } }
 
 @Composable private fun SourceManager(sources: List<FeedSource>, failed: Set<String>, input: String, sourceError: String?, onInput: (String) -> Unit, onAdd: () -> Unit, onBack: () -> Unit, onToggle: (FeedSource) -> Unit, onCategory: (FeedSource) -> Unit, onDelete: (FeedSource) -> Unit) { Column(Modifier.fillMaxSize().padding(16.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("Fontes", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); TextButton(onClick = onBack) { Text("Voltar") } }; Text("Atualização paralela com timeout. Fontes com falha não bloqueiam o feed.", color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(12.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedTextField(input, onInput, Modifier.weight(1f), singleLine = true, label = { Text("Adicionar site") }); Button(onClick = onAdd) { Text("Adicionar") } }; sourceError?.let { Text(it, color = MaterialTheme.colorScheme.error) }; Spacer(Modifier.height(12.dp)); LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) { items(sources, key = { it.id }) { source -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(source.name, fontWeight = FontWeight.SemiBold); Text(source.siteUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1) }; Switch(source.enabled, { onToggle(source) }) }; Row(verticalAlignment = Alignment.CenterVertically) { TextButton(onClick = { onCategory(source) }) { Text(source.category.label) }; if (source.id in failed) Text("⚠ Falhou", color = MaterialTheme.colorScheme.error); Spacer(Modifier.weight(1f)); if (source.id.startsWith("custom-")) TextButton(onClick = { onDelete(source) }) { Text("Excluir") } } } } } } } }
 @Composable private fun LoadingCard(message: String, compact: Boolean = false) { Card(Modifier.fillMaxWidth()) { Row(Modifier.padding(if (compact) 12.dp else 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { CircularProgressIndicator(Modifier.size(if (compact) 20.dp else 26.dp), strokeWidth = 2.5.dp); Text(message) } } }
 @Composable private fun EmptyState(tab: Int) { Box(Modifier.fillMaxWidth().padding(vertical = 72.dp), contentAlignment = Alignment.Center) { Text(if (tab == 1) "Ainda não há notícias lidas" else if (tab == 2) "Sua lista está vazia" else "Nenhuma notícia encontrada", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) } }
 @Composable private fun InlineError(message: String, retry: () -> Unit) { Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.medium) { Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) { Text(message, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer); TextButton(onClick = retry) { Text("Tentar") } } } }
 
-@Composable private fun ReaderContent(article: Article, saved: Boolean, onBack: () -> Unit, onToggleSaved: () -> Unit, canTranslate: Boolean, translated: Boolean, translating: Boolean, translateError: String?, onTranslate: () -> Unit) {
+@Composable private fun ReaderContent(article: Article, articleUrl: String, saved: Boolean, onBack: () -> Unit, onToggleSaved: () -> Unit, onOpenExternal: () -> Unit, onShare: () -> Unit, canTranslate: Boolean, translated: Boolean, translating: Boolean, translateError: String?, onTranslate: () -> Unit) {
     val listState = rememberLazyListState(); val sourceColor = readerSourceColor(article.sourceId); val progress by remember { derivedStateOf { val total = listState.layoutInfo.totalItemsCount.coerceAtLeast(1); (listState.firstVisibleItemIndex.toFloat() / (total - 1).coerceAtLeast(1)).coerceIn(0f, 1f) } }; val cleanTitle = cleanNewsTitle(article.title, article.sourceId)
-    Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = { Column { LinearProgressIndicator(progress, Modifier.fillMaxWidth().height(3.dp), color = sourceColor); TopAppBar(title = { Text("Leitura", fontWeight = FontWeight.SemiBold) }, navigationIcon = { IconButton(onClick = onBack) { Text("‹", fontSize = 32.sp) } }, actions = { if (canTranslate) TextButton(onClick = onTranslate, enabled = !translating) { Text(if (translating) "…" else if (translated) "Original" else "Traduzir") }; TextButton(onClick = onToggleSaved) { Text(if (saved) "★" else "☆", fontSize = 24.sp) } }) } }) { padding -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 56.dp)) {
+    Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = { Column { LinearProgressIndicator(progress, Modifier.fillMaxWidth().height(3.dp), color = sourceColor); TopAppBar(title = { Text("Leitura", fontWeight = FontWeight.SemiBold) }, navigationIcon = { IconButton(onClick = onBack) { Text("‹", fontSize = 32.sp) } }, actions = { if (canTranslate) TextButton(onClick = onTranslate, enabled = !translating) { Text(if (translating) "…" else if (translated) "Original" else "Traduzir") }; TextButton(onClick = onShare) { Text("↗", fontSize = 20.sp) }; TextButton(onClick = onOpenExternal) { Text("🌐", fontSize = 18.sp) }; TextButton(onClick = onToggleSaved) { Text(if (saved) "★" else "☆", fontSize = 24.sp) } }) } }) { padding -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 56.dp)) {
         item { Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.size(8.dp).clip(MaterialTheme.shapes.small).background(sourceColor)); Text(sourceLabel(article.sourceId), color = sourceColor, fontWeight = FontWeight.Bold) }; Text(cleanTitle, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold, lineHeight = 42.sp); article.subtitle?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.titleLarge, lineHeight = 29.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { article.author?.takeIf { it.isNotBlank() }?.let { Text("Por $it", fontWeight = FontWeight.SemiBold) }; article.publishedAt?.let { Text(publishedLabel(it), color = MaterialTheme.colorScheme.onSurfaceVariant) } }; translateError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }; if (article.extraction.warnings.any { it == "short_article" || it == "low_confidence" }) Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) { Text("A página pode ter fornecido conteúdo parcial. O NewsRSS não limita o tamanho do texto; a extração depende do site.", Modifier.padding(10.dp), style = MaterialTheme.typography.bodySmall) } } }
         if (!article.heroImageUrl.isNullOrBlank()) item { AsyncImage(article.heroImageUrl, cleanTitle, Modifier.fillMaxWidth().heightIn(max = 360.dp), contentScale = ContentScale.Crop) }
         article.blocks.forEachIndexed { index, block -> item(key = "reader-$index") { ReaderBlock(block, sourceColor, cleanTitle) } }
@@ -399,3 +407,16 @@ private fun timeLabel(instant: Instant): String = DateTimeFormatter.ofPattern("H
 private fun sourceShortName(sourceId: String): String = when { sourceId.contains("g1", true) -> "G1"; sourceId.contains("cnn", true) -> "CNN Brasil"; sourceId.contains("uol", true) -> "UOL"; sourceId.contains("reuters", true) -> "Reuters"; sourceId.contains("ap-news", true) -> "AP"; sourceId.contains("guardian", true) -> "The Guardian"; sourceId.contains("bbc", true) -> "BBC"; sourceId.contains("globo", true) -> "Globo"; else -> sourceId.substringAfterLast('.').ifBlank { "NewsRSS" }.replaceFirstChar { it.uppercase() } }
 private fun readerSourceColor(sourceId: String): Color = when { sourceId.contains("g1", true) || sourceId.contains("globo", true) -> Color(0xFFE51B23); sourceId.contains("verge", true) -> Color(0xFF111111); sourceId.contains("sky", true) -> Color(0xFF0072CE); sourceId.contains("espn", true) -> Color(0xFFCC0000); else -> Color(0xFF6750A4) }
 private fun sourceLabel(sourceId: String): String = sourceShortName(sourceId)
+
+private fun openExternal(context: android.content.Context, url: String) {
+    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+}
+
+private fun shareArticle(context: android.content.Context, title: String, url: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, title)
+        putExtra(Intent.EXTRA_TEXT, "$title\n$url")
+    }
+    runCatching { context.startActivity(Intent.createChooser(intent, "Compartilhar notícia")) }
+}

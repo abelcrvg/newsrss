@@ -13,7 +13,8 @@ object ImageQuality {
         val noise = listOf(
             "logo", "avatar", "author", "profile", "headshot", "portrait", "icon", "sprite", "pixel",
             "tracking", "placeholder", "favicon", "1x1", "transparent", "whatsapp", "twitter", "facebook",
-            "linkedin", "telegram", "instagram", "youtube", "tiktok", "qrcode", "qr-code"
+            "linkedin", "telegram", "instagram", "youtube", "tiktok", "qrcode", "qr-code", "compartilhar",
+            "share-icon", "share_icon", "social-share", "social_share", "btn-share", "btn_share"
         )
         if (noise.any(lower::contains)) return false
 
