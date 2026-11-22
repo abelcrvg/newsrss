@@ -42,11 +42,13 @@ class NewsRefreshWorker(
             sources.map { source ->
                 async(Dispatchers.IO) {
                     semaphore.withPermit {
-                        val result = withTimeoutOrNull(25_000L) { runCatching { reader.read(source) }.getOrElse { Result.failure(it) } }
-                        val freshItems = result?.getOrNull().orEmpty().map { it.copy(sourceId = source.id) }
+                        val timedOut = withTimeoutOrNull(25_000L) {
+                            runCatching { reader.read(source) }.getOrElse { Result.failure(it) }
+                        }
+                        val freshItems = timedOut?.getOrNull().orEmpty().map { it.copy(sourceId = source.id) }
                         synchronized(batches) {
                             if (freshItems.isNotEmpty()) batches += freshItems
-                            if (result != null) {
+                            if (timedOut != null) {
                                 markRefreshed(source.id)
                                 successCount++
                             } else {

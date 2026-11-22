@@ -28,7 +28,8 @@ object NewsClusterer {
         val clusters = mutableListOf<MutableCluster>()
 
         for (item in prepared) {
-            val match = clusters.asSequence().takeLast(MAX_COMPARE).firstOrNull { candidate -> belongsTo(candidate, item) }
+            val recentStart = (clusters.size - MAX_COMPARE).coerceAtLeast(0)
+            val match = clusters.subList(recentStart, clusters.size).firstOrNull { candidate -> belongsTo(candidate, item) }
                 ?: clusters.firstOrNull { candidate -> belongsTo(candidate, item) }
             if (match != null) match.items += item else clusters += MutableCluster(mutableListOf(item))
         }
