@@ -24,13 +24,13 @@ class HomepageNewsCrawler {
 
             if (source.id == "the-verge" || baseHost == "theverge.com") {
                 val base = source.siteUrl.trimEnd('/')
-                val sectionUrls = listOf(base, "$base/tech", "$base/ai", "$base/science", "$base/entertainment", "$base/reviews", "$base/policy", "$base/security", "$base/games").distinct()
+                val sectionUrls = listOf(base, "$base/tech", "$base/ai", "$base/science", "$base/entertainment").distinct()
                 sectionUrls.forEach { url -> runCatching { fetch(url) }.onSuccess { documents += it } }
             } else if (isGloboPortal(source, baseHost)) {
                 runCatching { fetch(source.siteUrl) }.onSuccess { documents += it }
                 var page = 1
                 var emptyPages = 0
-                while (emptyPages < 2) {
+                while (emptyPages < 2 && page <= MAX_GLOBO_PAGES) {
                     val url = if (page == 1) "${source.siteUrl.trimEnd('/')}/plantao/" else "${source.siteUrl.trimEnd('/')}/plantao/index/feed/pagina-$page.ghtml"
                     val before = documents.sumOf { it.select("a[href]").size }
                     val result = runCatching { fetch(url) }
@@ -199,7 +199,8 @@ class HomepageNewsCrawler {
     private data class Candidate(val item: FeedItem, val score: Int)
 
     private companion object {
-        const val TIMEOUT = 20_000
+        const val TIMEOUT = 15_000
+        const val MAX_GLOBO_PAGES = 4
         const val MIN_SCORE = 3
         const val MIN_TITLE_LENGTH = 25
         const val MAX_TITLE_LENGTH = 180

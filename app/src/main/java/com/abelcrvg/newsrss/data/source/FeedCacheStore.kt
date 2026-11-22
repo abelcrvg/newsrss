@@ -2,12 +2,13 @@ package com.abelcrvg.newsrss.data.source
 
 import android.content.Context
 import com.abelcrvg.newsrss.core.feed.FeedItem
+import com.abelcrvg.newsrss.core.feed.NewsClusterer
 import com.abelcrvg.newsrss.core.media.ImageQuality
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 
-/** Persistent feed cache. Every merge is immediately visible to readers of the cache. */
+/** Persistent feed cache with batched merge/save to reduce JSON churn. */
 class FeedCacheStore(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -29,17 +30,23 @@ class FeedCacheStore(context: Context) {
                     ))
                 }
             }
-        }.distinctBy { it.url }.sortedWith(feedOrder())
+        }.distinctBy { NewsClusterer.canonicalUrl(it.url) }.sortedWith(feedOrder()).take(MAX_ITEMS)
     }.getOrDefault(emptyList())
 
     fun merge(items: List<FeedItem>) {
         if (items.isEmpty()) return
-        val merged = LinkedHashMap<String, FeedItem>()
-        load().forEach { merged[it.url] = it }
-        items.forEach { fresh ->
+        save(mergeLists(load(), items))
+    }
+
+    fun mergeLists(current: List<FeedItem>, incoming: List<FeedItem>): List<FeedItem> {
+        if (incoming.isEmpty()) return current.sortedWith(feedOrder()).take(MAX_ITEMS)
+        val merged = LinkedHashMap<String, FeedItem>(current.size + incoming.size)
+        current.forEach { merged[NewsClusterer.canonicalUrl(it.url)] = it }
+        incoming.forEach { fresh ->
             val sanitized = fresh.copy(imageUrl = ImageQuality.sanitize(fresh.imageUrl))
-            val previous = merged[sanitized.url]
-            merged[sanitized.url] = if (previous == null) sanitized else previous.copy(
+            val key = NewsClusterer.canonicalUrl(sanitized.url)
+            val previous = merged[key]
+            merged[key] = if (previous == null) sanitized else previous.copy(
                 id = sanitized.id,
                 sourceId = sanitized.sourceId,
                 title = sanitized.title.ifBlank { previous.title },
@@ -49,8 +56,12 @@ class FeedCacheStore(context: Context) {
                 imageUrl = sanitized.imageUrl ?: previous.imageUrl
             )
         }
+        return merged.values.sortedWith(feedOrder()).take(MAX_ITEMS)
+    }
+
+    fun save(items: List<FeedItem>) {
         val array = JSONArray()
-        merged.values.sortedWith(feedOrder()).forEach { item ->
+        items.sortedWith(feedOrder()).take(MAX_ITEMS).forEach { item ->
             array.put(JSONObject().apply {
                 put("id", item.id); put("sourceId", item.sourceId); put("title", item.title)
                 put("url", item.url); put("summary", item.summary ?: "")
@@ -70,5 +81,6 @@ class FeedCacheStore(context: Context) {
         const val KEY_ITEMS = "items"
         const val KEY_UPDATED_AT = "updated_at"
         const val MAX_AGE_DAYS = 45L
+        const val MAX_ITEMS = 1200
     }
 }

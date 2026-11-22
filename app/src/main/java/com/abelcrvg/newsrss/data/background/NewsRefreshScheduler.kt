@@ -36,7 +36,7 @@ object NewsRefreshScheduler {
         val request = OneTimeWorkRequestBuilder<NewsRefreshWorker>().build()
         WorkManager.getInstance(appContext).enqueueUniqueWork(
             STARTUP_NAME,
-            ExistingWorkPolicy.KEEP,
+            ExistingWorkPolicy.REPLACE,
             request
         )
     }

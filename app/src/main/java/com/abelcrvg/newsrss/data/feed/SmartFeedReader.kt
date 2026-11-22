@@ -1,20 +1,26 @@
 package com.abelcrvg.newsrss.data.feed
 
-import android.content.Context
-import com.abelcrvg.newsrss.NewsRssApplication
 import com.abelcrvg.newsrss.core.feed.FeedItem
 import com.abelcrvg.newsrss.core.feed.FeedReader
 import com.abelcrvg.newsrss.core.model.FeedSource
-import com.abelcrvg.newsrss.core.model.SourceLanguage
-import com.abelcrvg.newsrss.data.translation.OnDeviceTranslator
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.net.URI
 import java.time.Instant
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class SmartFeedReader(
-    private val translationContext: Context? = runCatching { NewsRssApplication.appContext }.getOrNull(),
-    private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler(), private val g1Crawler: G1SiteCrawler = G1SiteCrawler(), private val geCrawler: GESiteCrawler = GESiteCrawler(), private val uolCrawler: UolSiteCrawler = UolSiteCrawler(), private val tecmundoCrawler: TecmundoSiteCrawler = TecmundoSiteCrawler(), private val voxelCrawler: VoxelSiteCrawler = VoxelSiteCrawler(), private val ignCrawler: IgnBrasilSiteCrawler = IgnBrasilSiteCrawler(), private val theVergeCrawler: TheVergeSiteCrawler = TheVergeSiteCrawler(), private val skySportsCrawler: SkySportsSiteCrawler = SkySportsSiteCrawler(), private val espnCrawler: EspnSiteCrawler = EspnSiteCrawler(), private val rssCrawler: RssFeedCrawler = RssFeedCrawler()
+    @Suppress("UNUSED_PARAMETER") private val translationContext: android.content.Context? = null,
+    private val homepageCrawler: HomepageNewsCrawler = HomepageNewsCrawler(),
+    private val g1Crawler: G1SiteCrawler = G1SiteCrawler(),
+    private val geCrawler: GESiteCrawler = GESiteCrawler(),
+    private val uolCrawler: UolSiteCrawler = UolSiteCrawler(),
+    private val tecmundoCrawler: TecmundoSiteCrawler = TecmundoSiteCrawler(),
+    private val voxelCrawler: VoxelSiteCrawler = VoxelSiteCrawler(),
+    private val ignCrawler: IgnBrasilSiteCrawler = IgnBrasilSiteCrawler(),
+    private val theVergeCrawler: TheVergeSiteCrawler = TheVergeSiteCrawler(),
+    private val skySportsCrawler: SkySportsSiteCrawler = SkySportsSiteCrawler(),
+    private val espnCrawler: EspnSiteCrawler = EspnSiteCrawler(),
+    private val rssCrawler: RssFeedCrawler = RssFeedCrawler()
 ) : FeedReader {
     override suspend fun read(source: FeedSource): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
         val host = runCatching { URI(source.siteUrl).host.orEmpty().removePrefix("www.").lowercase() }.getOrDefault("")
@@ -30,28 +36,7 @@ class SmartFeedReader(
             source.id == "espn-brasil" || host == "espn.com.br" || host.endsWith(".espn.com.br") -> combineWithRss(espnCrawler.crawl(source), source, listOf(source.feedUrl, "https://www.espn.com/espn/rss/soccer/news"))
             else -> combineWithRss(homepageCrawler.crawl(source), source, listOf(source.feedUrl))
         }
-        val filtered = if (source.id == "trivela") filterTrivelaBettingContent(result) else result
-        translateEnglishItems(source, filtered)
-    }
-
-    private suspend fun translateEnglishItems(source: FeedSource, result: Result<List<FeedItem>>): Result<List<FeedItem>> {
-        val context = translationContext ?: return result
-        if (source.language != SourceLanguage.ENGLISH || result.isFailure) return result
-        val items = result.getOrNull().orEmpty()
-        val targets = items.filter(::looksEnglish).take(MAX_ENGLISH_ITEMS)
-        if (targets.isEmpty()) return result
-        return runCatching {
-            val translated = OnDeviceTranslator(context.applicationContext).translateFeedItems(targets)
-            val byUrl = translated.associateBy { it.url }
-            Result.success(items.map { byUrl[it.url] ?: it })
-        }.getOrElse { result }
-    }
-
-    private fun looksEnglish(item: FeedItem): Boolean {
-        val text = "${item.title} ${item.summary.orEmpty()}".lowercase()
-        val englishSignals = listOf(" the ", " and ", " of ", " to ", " in ", " for ", " with ", " from ", " has ", " have ", " will ", " on ", " at ", " is ", " are ", " this ", " that ", " after ", " before ", " latest ", " news ", " report ")
-        val portugueseSignals = listOf(" o ", " a ", " os ", " as ", " de ", " do ", " da ", " dos ", " das ", " para ", " com ", " que ", " em ", " no ", " na ", " uma ", " um ", " não ", " está ", " sobre ")
-        return englishSignals.count(text::contains) >= 2 && englishSignals.count(text::contains) > portugueseSignals.count(text::contains)
+        if (source.id == "trivela") filterTrivelaBettingContent(result) else result
     }
 
     private fun filterTrivelaBettingContent(result: Result<List<FeedItem>>): Result<List<FeedItem>> = result.map { items -> items.filterNot(::isBettingFocusedTrivelaArticle) }
@@ -70,5 +55,5 @@ class SmartFeedReader(
         val merged = LinkedHashMap<String, FeedItem>(); direct.forEach { merged[it.url] = it }; rss.forEach { feedItem -> val previous = merged[feedItem.url]; merged[feedItem.url] = if (previous == null) feedItem else previous.copy(title = previous.title.ifBlank { feedItem.title }, summary = previous.summary?.takeIf { it.isNotBlank() } ?: feedItem.summary, publishedAt = feedItem.publishedAt ?: previous.publishedAt, imageUrl = previous.imageUrl?.takeIf { it.isNotBlank() } ?: feedItem.imageUrl) }
         return Result.success(merged.values.sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenBy { it.title.lowercase() }).take(MAX_PUBLISHER_ITEMS))
     }
-    private companion object { const val MAX_PUBLISHER_ITEMS = 60; const val MAX_ENGLISH_ITEMS = 20 }
+    private companion object { const val MAX_PUBLISHER_ITEMS = 60 }
 }

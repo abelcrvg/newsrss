@@ -8,10 +8,17 @@ import com.abelcrvg.newsrss.data.feed.SmartFeedReader
 import com.abelcrvg.newsrss.data.remote.SupabaseNewsPublisher
 import com.abelcrvg.newsrss.data.source.FeedCacheStore
 import com.abelcrvg.newsrss.data.source.SourceStore
+import com.abelcrvg.newsrss.core.feed.FeedItem
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
-/** Refreshes sources sequentially so each source can populate the cache independently. */
+/** Refreshes sources in parallel with bounded concurrency and per-source intervals. */
 class NewsRefreshWorker(
     appContext: Context,
     workerParams: WorkerParameters
@@ -19,36 +26,55 @@ class NewsRefreshWorker(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val sourceStore = SourceStore(applicationContext)
         val cacheStore = FeedCacheStore(applicationContext)
-        val sources = sourceStore.load(SourceRegistry.defaultSources).filter { it.enabled }
+        val now = System.currentTimeMillis()
+        val sources = sourceStore.load(SourceRegistry.defaultSources)
+            .filter { it.enabled }
+            .filter { shouldRefresh(it.id, it.refreshIntervalMinutes, now) }
         if (sources.isEmpty()) return@withContext Result.success()
 
-        val reader = SmartFeedReader()
+        val reader = SmartFeedReader(translationContext = null)
+        val semaphore = Semaphore(4)
+        val batches = mutableListOf<List<FeedItem>>()
         var successCount = 0
+        var failureCount = 0
 
-        for (source in sources) {
-            val result = try {
-                reader.read(source)
-            } catch (_: Throwable) {
-                null
-            }
-
-            if (result != null) {
-                val freshItems = result.getOrNull().orEmpty().map { it.copy(sourceId = source.id) }
-                if (freshItems.isNotEmpty()) {
-                    cacheStore.merge(freshItems)
-                    SupabaseNewsPublisher.publish(freshItems)
+        coroutineScope {
+            sources.map { source ->
+                async(Dispatchers.IO) {
+                    semaphore.withPermit {
+                        val result = withTimeoutOrNull(25_000L) { runCatching { reader.read(source) }.getOrElse { Result.failure(it) } }
+                        val freshItems = result?.getOrNull().orEmpty().map { it.copy(sourceId = source.id) }
+                        synchronized(batches) {
+                            if (freshItems.isNotEmpty()) batches += freshItems
+                            if (result != null) {
+                                markRefreshed(source.id)
+                                successCount++
+                            } else {
+                                failureCount++
+                            }
+                        }
+                    }
                 }
-                markRefreshed(source.id)
-                successCount++
-            }
+            }.awaitAll()
+        }
+
+        val incoming = batches.flatten()
+        if (incoming.isNotEmpty()) {
+            cacheStore.save(cacheStore.mergeLists(cacheStore.load(), incoming))
+            runCatching { SupabaseNewsPublisher.publish(incoming.take(400)) }
         }
 
         when {
-            successCount == sources.size -> Result.success()
-            successCount > 0 -> Result.success()
-            runAttemptCount < 2 -> Result.retry()
-            else -> Result.failure()
+            successCount == 0 && failureCount > 0 && runAttemptCount < 2 -> Result.retry()
+            successCount == 0 && failureCount > 0 -> Result.failure()
+            else -> Result.success()
         }
+    }
+
+    private fun shouldRefresh(sourceId: String, intervalMinutes: Long, now: Long): Boolean {
+        val last = applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("source:$sourceId", 0L)
+        val intervalMs = intervalMinutes.coerceIn(5L, 120L) * 60_000L
+        return last == 0L || now - last >= intervalMs
     }
 
     private fun markRefreshed(sourceId: String) {

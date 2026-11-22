@@ -19,26 +19,33 @@ data class NewsCluster(
 object NewsClusterer {
     private const val MAX_CLUSTER_WINDOW_HOURS = 36L
     private const val HOT_WINDOW_MINUTES = 120L
+    private const val MAX_INPUT_ITEMS = 220
+    private const val MAX_COMPARE = 40
 
     fun cluster(items: List<FeedItem>): List<NewsCluster> {
-        val sorted = items.sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenByDescending { it.id })
-        val clusters = mutableListOf<MutableList<FeedItem>>()
-        for (item in sorted) {
-            val match = clusters.firstOrNull { candidate -> belongsTo(candidate, item) }
-            if (match != null) match += item else clusters += mutableListOf(item)
+        val sorted = items.sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenByDescending { it.id }).take(MAX_INPUT_ITEMS)
+        val prepared = sorted.map { Prepared(it, canonicalUrl(it.url), distinctiveTokens(it.title), distinctiveTokens(it.summary.orEmpty())) }
+        val clusters = mutableListOf<MutableCluster>()
+
+        for (item in prepared) {
+            val match = clusters.asSequence().takeLast(MAX_COMPARE).firstOrNull { candidate -> belongsTo(candidate, item) }
+                ?: clusters.firstOrNull { candidate -> belongsTo(candidate, item) }
+            if (match != null) match.items += item else clusters += MutableCluster(mutableListOf(item))
         }
-        return clusters.mapNotNull { articles ->
-            val unique = articles.distinctBy { canonicalUrl(it.url) }
-            val sources = unique.map { it.sourceId }.toSet()
+
+        return clusters.mapNotNull { cluster ->
+            val unique = cluster.items.groupBy { it.canonical }.values.mapNotNull { it.maxByOrNull { p -> p.item.publishedAt ?: Instant.EPOCH } }
+            val sources = unique.map { it.item.sourceId }.toSet()
             if (unique.size < 2 || sources.size < 2) return@mapNotNull null
-            val latest = unique.maxByOrNull { it.publishedAt ?: Instant.EPOCH } ?: return@mapNotNull null
+            val ordered = unique.sortedWith(compareByDescending<Prepared> { it.item.publishedAt ?: Instant.EPOCH }.thenByDescending { it.item.id }).map { it.item }
+            val latest = ordered.firstOrNull() ?: return@mapNotNull null
             NewsCluster(
-                id = clusterId(unique),
+                id = clusterId(ordered),
                 title = latest.title.trim(),
-                articles = unique.sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenByDescending { it.id }),
+                articles = ordered,
                 sourceIds = sources,
                 lastUpdatedAt = latest.publishedAt ?: Instant.now(),
-                isHot = isHot(unique)
+                isHot = isHot(ordered)
             )
         }.sortedWith(compareByDescending<NewsCluster> { it.isHot }.thenByDescending { it.lastUpdatedAt })
     }
@@ -55,15 +62,15 @@ object NewsClusterer {
         return "${uri.scheme?.lowercase(Locale.ROOT) ?: "https"}://$host$path$query"
     }
 
-    private fun belongsTo(cluster: List<FeedItem>, item: FeedItem): Boolean {
-        if (cluster.any { canonicalUrl(it.url) == canonicalUrl(item.url) }) return true
-        val itemTime = item.publishedAt
-        val nearest = cluster.mapNotNull { it.publishedAt?.let { time -> Duration.between(time, itemTime ?: time).abs() } }.minOrNull()
+    private fun belongsTo(cluster: MutableCluster, item: Prepared): Boolean {
+        if (cluster.items.any { it.canonical == item.canonical }) return true
+        val itemTime = item.item.publishedAt
+        val nearest = cluster.items.mapNotNull { it.item.publishedAt?.let { time -> Duration.between(time, itemTime ?: time).abs() } }.minOrNull()
         if (nearest != null && nearest.toHours() > MAX_CLUSTER_WINDOW_HOURS) return false
-        return cluster.any { existing ->
-            val titleScore = tokenSimilarity(existing.title, item.title)
-            val shared = distinctiveTokens(existing.title).intersect(distinctiveTokens(item.title)).size
-            val summaryScore = tokenSimilarity(existing.summary.orEmpty(), item.summary.orEmpty())
+        return cluster.items.any { existing ->
+            val titleScore = jaccard(existing.titleTokens, item.titleTokens)
+            val shared = existing.titleTokens.intersect(item.titleTokens).size
+            val summaryScore = jaccard(existing.summaryTokens, item.summaryTokens)
             (titleScore >= 0.62 && shared >= 2) || (titleScore >= 0.48 && shared >= 3 && summaryScore >= 0.18)
         }
     }
@@ -74,11 +81,11 @@ object NewsClusterer {
         return recent.size >= 3 || (recent.size >= 2 && recent.map { it.sourceId }.distinct().size >= 2)
     }
 
-    private fun tokenSimilarity(a: String, b: String): Double {
-        val left = distinctiveTokens(a)
-        val right = distinctiveTokens(b)
-        if (left.isEmpty() || right.isEmpty()) return 0.0
-        return left.intersect(right).size.toDouble() / left.union(right).size.toDouble()
+    private fun jaccard(a: Set<String>, b: Set<String>): Double {
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+        val inter = a.intersect(b).size
+        if (inter == 0) return 0.0
+        return inter.toDouble() / a.union(b).size.toDouble()
     }
 
     private fun distinctiveTokens(text: String): Set<String> = normalize(text).split(Regex("\\s+")).asSequence()
@@ -96,6 +103,9 @@ object NewsClusterer {
         val digest = MessageDigest.getInstance("SHA-256").digest(seed.toByteArray())
         return "cluster-" + digest.take(10).joinToString("") { "%02x".format(it) }
     }
+
+    private data class Prepared(val item: FeedItem, val canonical: String, val titleTokens: Set<String>, val summaryTokens: Set<String>)
+    private data class MutableCluster(val items: MutableList<Prepared>)
 
     private val TRACKING_QUERY_KEYS = setOf("fbclid", "gclid", "mc_cid", "mc_eid", "ref", "referrer", "output", "share")
     private val STOP_WORDS = setOf(

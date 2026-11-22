@@ -12,7 +12,7 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 class JsoupArticleExtractor : ArticleExtractor {
-    override suspend fun extract(url: String): Result<Article> = runCatching {
+    override suspend fun extract(url: String): Result<Article> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching {
         val document = Jsoup.connect(url).userAgent(USER_AGENT).referrer("https://www.google.com/").timeout(20_000).followRedirects(true).get()
         val profile = ExtractionProfiles.forUrl(url)
         document.select("script,style,noscript,iframe,nav,footer,header,aside,form,.advertisement,.ad,.ads,.social-share,.related-content,.newsletter,.comments").remove()
@@ -35,7 +35,7 @@ class JsoupArticleExtractor : ArticleExtractor {
             if (extractionConfidence < 80) add("low_confidence")
         }
         Article(id = url, sourceId = sourceIdFromUrl(url), url = url, title = title, subtitle = subtitle, author = author, publishedAt = publishedAt, heroImageUrl = hero, blocks = blocks, extraction = ExtractionMetadata(extractionConfidence, profile.name, wordCount, blocks.count { it is ArticleBlock.Image }, warnings))
-    }
+    } }
 
     private fun findBestBody(document: org.jsoup.nodes.Document, profile: ExtractionProfile): Element {
         val candidates = mutableListOf<Element>()
