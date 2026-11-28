@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.abelcrvg.newsrss.core.feed.FeedItem
+import com.abelcrvg.newsrss.core.feed.FeedMerger
 import com.abelcrvg.newsrss.core.feed.NewsCluster
 import com.abelcrvg.newsrss.core.feed.NewsClusterer
 import com.abelcrvg.newsrss.core.model.Article
@@ -40,11 +41,14 @@ import com.abelcrvg.newsrss.core.source.SourceRegistry
 import com.abelcrvg.newsrss.data.background.NewsRefreshScheduler
 import com.abelcrvg.newsrss.data.extraction.JsoupArticleExtractor
 import com.abelcrvg.newsrss.data.feed.SmartFeedReader
+import com.abelcrvg.newsrss.data.source.ArticleCacheStore
 import com.abelcrvg.newsrss.data.source.FeedCacheStore
 import com.abelcrvg.newsrss.data.source.ReadArticleStore
 import com.abelcrvg.newsrss.data.source.SavedArticleStore
 import com.abelcrvg.newsrss.data.source.SourceStore
 import com.abelcrvg.newsrss.data.translation.OnDeviceTranslator
+import com.abelcrvg.newsrss.ui.theme.LocalAppSettings
+import com.abelcrvg.newsrss.ui.theme.NewsRSSSettingsButton
 import com.abelcrvg.newsrss.ui.theme.NewsRSSTheme
 import java.net.URI
 import java.time.Instant
@@ -88,6 +92,7 @@ private fun NewsRSSApp() {
     val app = context.applicationContext
     val sourceStore = remember { SourceStore(app) }
     val cacheStore = remember { FeedCacheStore(app) }
+    val articleCache = remember { ArticleCacheStore(app) }
     val readStore = remember { ReadArticleStore(app) }
     val savedStore = remember { SavedArticleStore(app) }
     val scope = rememberCoroutineScope()
@@ -142,10 +147,13 @@ private fun NewsRSSApp() {
         opening = true
         error = null
         scope.launch {
-            val result = withContext(Dispatchers.IO) { JsoupArticleExtractor().extract(item.url) }
-            val raw = result.getOrNull()
-            article = raw?.copy(publishedAt = raw.publishedAt ?: item.publishedAt)
-            error = raw?.let { null } ?: result.exceptionOrNull()?.message ?: "Não foi possível abrir a notícia."
+            val cached = withContext(Dispatchers.IO) { articleCache.load(item.url) }
+            val result = if (cached == null) withContext(Dispatchers.IO) { JsoupArticleExtractor().extract(item.url) } else null
+            val raw = cached ?: result?.getOrNull()
+            val ready = raw?.copy(publishedAt = raw.publishedAt ?: item.publishedAt)
+            article = ready
+            if (ready != null && cached == null) withContext(Dispatchers.IO) { articleCache.save(ready) }
+            error = ready?.let { null } ?: result?.exceptionOrNull()?.message ?: "Não foi possível abrir a notícia."
             opening = false
         }
     }
@@ -364,6 +372,7 @@ private data class InitialData(val sources: List<FeedSource>, val readUrls: Set<
             val updated = if (lastUpdatedAt > 0L) " · ${timeLabel(Instant.ofEpochMilli(lastUpdatedAt))}" else ""
             Text(status + updated, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        NewsRSSSettingsButton()
         TextButton(onClick = onSources) { Text("Fontes") }
         FilledTonalButton(enabled = initialized && !loading, onClick = onRefresh) { Text("Atualizar") }
     }
@@ -382,26 +391,18 @@ private data class InitialData(val sources: List<FeedSource>, val readUrls: Set<
 @Composable private fun InlineError(message: String, retry: () -> Unit) { Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.medium) { Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) { Text(message, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer); TextButton(onClick = retry) { Text("Tentar") } } } }
 
 @Composable private fun ReaderContent(article: Article, articleUrl: String, saved: Boolean, onBack: () -> Unit, onToggleSaved: () -> Unit, onOpenExternal: () -> Unit, onShare: () -> Unit, canTranslate: Boolean, translated: Boolean, translating: Boolean, translateError: String?, onTranslate: () -> Unit) {
-    val listState = rememberLazyListState(); val sourceColor = readerSourceColor(article.sourceId); val progress by remember { derivedStateOf { val total = listState.layoutInfo.totalItemsCount.coerceAtLeast(1); (listState.firstVisibleItemIndex.toFloat() / (total - 1).coerceAtLeast(1)).coerceIn(0f, 1f) } }; val cleanTitle = cleanNewsTitle(article.title, article.sourceId)
-    Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = { Column { LinearProgressIndicator(progress, Modifier.fillMaxWidth().height(3.dp), color = sourceColor); TopAppBar(title = { Text("Leitura", fontWeight = FontWeight.SemiBold) }, navigationIcon = { IconButton(onClick = onBack) { Text("‹", fontSize = 32.sp) } }, actions = { if (canTranslate) TextButton(onClick = onTranslate, enabled = !translating) { Text(if (translating) "…" else if (translated) "Original" else "Traduzir") }; TextButton(onClick = onShare) { Text("↗", fontSize = 20.sp) }; TextButton(onClick = onOpenExternal) { Text("🌐", fontSize = 18.sp) }; TextButton(onClick = onToggleSaved) { Text(if (saved) "★" else "☆", fontSize = 24.sp) } }) } }) { padding -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 56.dp)) {
-        item { Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.size(8.dp).clip(MaterialTheme.shapes.small).background(sourceColor)); Text(sourceLabel(article.sourceId), color = sourceColor, fontWeight = FontWeight.Bold) }; Text(cleanTitle, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold, lineHeight = 42.sp); article.subtitle?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.titleLarge, lineHeight = 29.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { article.author?.takeIf { it.isNotBlank() }?.let { Text("Por $it", fontWeight = FontWeight.SemiBold) }; article.publishedAt?.let { Text(publishedLabel(it), color = MaterialTheme.colorScheme.onSurfaceVariant) } }; translateError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }; if (article.extraction.warnings.any { it == "short_article" || it == "low_confidence" }) Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) { Text("A página pode ter fornecido conteúdo parcial. O NewsRSS não limita o tamanho do texto; a extração depende do site.", Modifier.padding(10.dp), style = MaterialTheme.typography.bodySmall) } } }
+    val listState = rememberLazyListState(); val readerScale = LocalAppSettings.current.readerFontScale; val sourceColor = readerSourceColor(article.sourceId); val progress by remember { derivedStateOf { val total = listState.layoutInfo.totalItemsCount.coerceAtLeast(1); (listState.firstVisibleItemIndex.toFloat() / (total - 1).coerceAtLeast(1)).coerceIn(0f, 1f) } }; val cleanTitle = cleanNewsTitle(article.title, article.sourceId)
+    Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = { Column { LinearProgressIndicator(progress, Modifier.fillMaxWidth().height(3.dp), color = sourceColor); TopAppBar(title = { Text("Leitura", fontWeight = FontWeight.SemiBold) }, navigationIcon = { IconButton(onClick = onBack) { Text("‹", fontSize = 32.sp) } }, actions = { NewsRSSSettingsButton(); if (canTranslate) TextButton(onClick = onTranslate, enabled = !translating) { Text(if (translating) "…" else if (translated) "Original" else "Traduzir") }; TextButton(onClick = onShare) { Text("↗", fontSize = 20.sp) }; TextButton(onClick = onOpenExternal) { Text("🌐", fontSize = 18.sp) }; TextButton(onClick = onToggleSaved) { Text(if (saved) "★" else "☆", fontSize = 24.sp) } }) } }) { padding -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 56.dp)) {
+        item { Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.size(8.dp).clip(MaterialTheme.shapes.small).background(sourceColor)); Text(sourceLabel(article.sourceId), color = sourceColor, fontWeight = FontWeight.Bold) }; Text(cleanTitle, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold, fontSize = (36f * readerScale).sp, lineHeight = (42f * readerScale).sp); article.subtitle?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.titleLarge, fontSize = (22f * readerScale).sp, lineHeight = (29f * readerScale).sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { article.author?.takeIf { it.isNotBlank() }?.let { Text("Por $it", fontWeight = FontWeight.SemiBold) }; article.publishedAt?.let { Text(publishedLabel(it), color = MaterialTheme.colorScheme.onSurfaceVariant) } }; translateError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }; if (article.extraction.warnings.any { it == "short_article" || it == "low_confidence" }) Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) { Text("A página pode ter fornecido conteúdo parcial. O NewsRSS não limita o tamanho do texto; a extração depende do site.", Modifier.padding(10.dp), style = MaterialTheme.typography.bodySmall) } } }
         if (!article.heroImageUrl.isNullOrBlank()) item { AsyncImage(article.heroImageUrl, cleanTitle, Modifier.fillMaxWidth().heightIn(max = 360.dp), contentScale = ContentScale.Crop) }
-        article.blocks.forEachIndexed { index, block -> item(key = "reader-$index") { ReaderBlock(block, sourceColor, cleanTitle) } }
+        article.blocks.forEachIndexed { index, block -> item(key = "reader-$index") { ReaderBlock(block, sourceColor, cleanTitle, readerScale) } }
     } }
 }
-@Composable private fun ReaderBlock(block: ArticleBlock, accent: Color, title: String) { Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { when (block) { is ArticleBlock.Paragraph -> Text(block.text, Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge, fontSize = 19.sp, lineHeight = 32.sp); is ArticleBlock.Heading -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Spacer(Modifier.height(14.dp)); Text(block.text, style = if (block.level <= 2) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold); Box(Modifier.width(42.dp).height(3.dp).clip(MaterialTheme.shapes.small).background(accent)) }; is ArticleBlock.Image -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) { AsyncImage(block.url, block.altText ?: title, Modifier.fillMaxWidth().heightIn(max = 420.dp).clip(MaterialTheme.shapes.large), contentScale = ContentScale.Crop); block.caption?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Start) } }; is ArticleBlock.Quote -> Row(Modifier.fillMaxWidth()) { Box(Modifier.width(4.dp).heightIn(min = 60.dp).clip(MaterialTheme.shapes.small).background(accent)); Column(Modifier.padding(start = 16.dp)) { Text("“${block.text}”", style = MaterialTheme.typography.titleLarge, fontStyle = FontStyle.Italic, lineHeight = 30.sp); block.author?.let { Text("— $it", style = MaterialTheme.typography.labelMedium) } } }; is ArticleBlock.ListBlock -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { block.items.forEachIndexed { i, text -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) { Text(if (block.ordered) "${i + 1}." else "•", color = accent, fontWeight = FontWeight.Bold, fontSize = 20.sp); Text(text, style = MaterialTheme.typography.bodyLarge, fontSize = 19.sp, lineHeight = 31.sp) } } } }; Spacer(Modifier.height(20.dp)) } }
+@Composable private fun ReaderBlock(block: ArticleBlock, accent: Color, title: String, scale: Float) { Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { when (block) { is ArticleBlock.Paragraph -> Text(block.text, Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge, fontSize = (19f * scale).sp, lineHeight = (32f * scale).sp); is ArticleBlock.Heading -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Spacer(Modifier.height(14.dp)); Text(block.text, style = if (block.level <= 2) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold, lineHeight = (32f * scale).sp); Box(Modifier.width(42.dp).height(3.dp).clip(MaterialTheme.shapes.small).background(accent)) }; is ArticleBlock.Image -> Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) { AsyncImage(block.url, block.altText ?: title, Modifier.fillMaxWidth().heightIn(max = 420.dp).clip(MaterialTheme.shapes.large), contentScale = ContentScale.Crop); block.caption?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Start) } }; is ArticleBlock.Quote -> Row(Modifier.fillMaxWidth()) { Box(Modifier.width(4.dp).heightIn(min = 60.dp).clip(MaterialTheme.shapes.small).background(accent)); Column(Modifier.padding(start = 16.dp)) { Text("“${block.text}”", style = MaterialTheme.typography.titleLarge, fontStyle = FontStyle.Italic, lineHeight = (30f * scale).sp); block.author?.let { Text("— $it", style = MaterialTheme.typography.labelMedium) } } }; is ArticleBlock.ListBlock -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { block.items.forEachIndexed { i, text -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) { Text(if (block.ordered) "${i + 1}." else "•", color = accent, fontWeight = FontWeight.Bold, fontSize = (20f * scale).sp); Text(text, style = MaterialTheme.typography.bodyLarge, fontSize = (19f * scale).sp, lineHeight = (31f * scale).sp) } } } }; Spacer(Modifier.height(20.dp)) } }
 
 private fun cleanNewsTitle(title: String, sourceId: String): String { if (!sourceId.contains("cnn", true)) return title.trim(); return title.trim().replace(Regex("(?i)^imagem\\s+representando\\s+a\\s+mat[ée]ria\\s*:\\s*"), "").trim() }
-private fun mergeFeedItems(current: List<FeedItem>, incoming: List<FeedItem>): List<FeedItem> {
-    val merged = LinkedHashMap<String, FeedItem>(current.size + incoming.size)
-    current.forEach { merged[NewsClusterer.canonicalUrl(it.url)] = it }
-    incoming.forEach { fresh ->
-        val key = NewsClusterer.canonicalUrl(fresh.url)
-        val old = merged[key]
-        merged[key] = if (old == null) fresh else old.copy(id = fresh.id, sourceId = fresh.sourceId, title = fresh.title.ifBlank { old.title }, summary = fresh.summary?.takeIf { it.isNotBlank() } ?: old.summary, publishedAt = fresh.publishedAt ?: old.publishedAt, imageUrl = fresh.imageUrl?.takeIf { it.isNotBlank() } ?: old.imageUrl)
-    }
-    return merged.values.sortedWith(compareByDescending<FeedItem> { it.publishedAt ?: Instant.EPOCH }.thenByDescending { it.id })
-}
+private fun mergeFeedItems(current: List<FeedItem>, incoming: List<FeedItem>): List<FeedItem> =
+    FeedMerger.merge(current, incoming) { NewsClusterer.canonicalUrl(it.url) }
 private fun publishedLabel(instant: Instant): String = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale("pt", "BR")).withZone(ZoneId.systemDefault()).format(instant)
 private fun timeLabel(instant: Instant): String = DateTimeFormatter.ofPattern("HH:mm", Locale("pt", "BR")).withZone(ZoneId.systemDefault()).format(instant)
 private fun sourceShortName(sourceId: String): String = when { sourceId.contains("g1", true) -> "G1"; sourceId.contains("cnn", true) -> "CNN Brasil"; sourceId.contains("uol", true) -> "UOL"; sourceId.contains("reuters", true) -> "Reuters"; sourceId.contains("ap-news", true) -> "AP"; sourceId.contains("guardian", true) -> "The Guardian"; sourceId.contains("bbc", true) -> "BBC"; sourceId.contains("globo", true) -> "Globo"; else -> sourceId.substringAfterLast('.').ifBlank { "NewsRSS" }.replaceFirstChar { it.uppercase() } }

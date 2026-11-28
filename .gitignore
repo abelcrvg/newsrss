@@ -1,0 +1,9 @@
+.gradle/
+build/
+app/build/
+local.properties
+web/node_modules/
+web/.next/
+web/out/
+*.apk
+.DS_Store

@@ -67,6 +67,16 @@ The Android cache keeps recent stories locally. URLs are canonicalized to remove
 
 Supabase acts as the shared news ingestion layer. The mobile application only uses the publishable API key; privileged database access remains inside the Edge Function. The ingestion endpoint validates, limits and deduplicates incoming items before writing to `news_items`.
 
+### Reader preferences and offline cache
+
+Display settings are available from the home header and the reader: theme (system/light/dark), font family and reader text size. Text size affects article text only, leaving the app chrome untouched. Previously chosen preferences are migrated from the older dark-mode setting.
+
+Fully extracted articles are cached locally (up to 120 items) with their blocks, inline formatting, quick summary and extraction metadata. Reopening a cached article works without a network request, and English articles keep the manual translation action available.
+
+### Validation
+
+`FeedMerger` contains the pure feed deduplication/ordering rule used by the UI and is covered by JVM unit tests (`gradle :app:testDebugUnitTest`). The Android APK workflow runs these tests before assembling the debug APK.
+
 ## Project status
 
 The Android foundation, feed ingestion, source-specific crawling, article extraction, local caching, background refresh, translation, reader UI and Supabase synchronization are implemented. The project is still under active development, with additional source-specific extraction rules and richer personalization planned.

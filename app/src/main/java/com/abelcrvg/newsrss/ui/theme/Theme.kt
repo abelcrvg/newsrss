@@ -1,25 +1,31 @@
 package com.abelcrvg.newsrss.ui.theme
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontFamily
+
+/** Settings exposed to any screen through the theme, so the same dialog works everywhere. */
+data class AppSettings(
+    val themeMode: ThemeMode,
+    val readerFontScale: Float,
+    val fontFamilyName: String,
+    val onChanged: (ThemeMode, Float, String) -> Unit
+)
+
+val LocalAppSettings = compositionLocalOf<AppSettings> {
+    error("NewsRSSTheme must provide LocalAppSettings")
+}
 
 private val LightColors = lightColorScheme(
     primary = Color(0xFF155EEF),
@@ -47,13 +53,16 @@ private val DarkColors = darkColorScheme(
 
 @Composable
 fun NewsRSSTheme(content: @Composable () -> Unit) {
-    val context = LocalContext.current
-    val store = remember { SettingsStore(context) }
-    var darkMode by remember { mutableStateOf(store.darkMode) }
-    var fontScale by remember { mutableStateOf(store.fontScale) }
+    val store = remember { SettingsStore(LocalContext.current) }
+    var themeMode by remember { mutableStateOf(store.themeMode) }
+    var readerFontScale by remember { mutableStateOf(store.readerFontScale) }
     var fontFamilyName by remember { mutableStateOf(store.fontFamilyName) }
-    val baseDensity = LocalDensity.current
-    val density = Density(baseDensity.density, fontScale)
+
+    val darkTheme = when (themeMode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
     val family = storeFontFamily(fontFamilyName)
     val baseTypography = MaterialTheme.typography
     val typography = baseTypography.copy(
@@ -73,31 +82,26 @@ fun NewsRSSTheme(content: @Composable () -> Unit) {
         labelMedium = baseTypography.labelMedium.copy(fontFamily = family),
         labelSmall = baseTypography.labelSmall.copy(fontFamily = family)
     )
-    androidx.compose.runtime.CompositionLocalProvider(LocalDensity provides density) {
-        MaterialTheme(colorScheme = if (darkMode) DarkColors else LightColors, typography = typography) {
-            Box(Modifier.fillMaxSize()) {
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { content() }
-                FloatingActionButton(
-                    onClick = {},
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)
-                ) {
-                    NewsRSSSettingsButton(darkMode, fontScale, fontFamilyName) { dark, scale, selectedFamily ->
-                        darkMode = dark
-                        fontScale = scale
-                        fontFamilyName = selectedFamily
-                        store.darkMode = dark
-                        store.fontScale = scale
-                        store.fontFamilyName = selectedFamily
-                    }
-                }
+
+    MaterialTheme(colorScheme = if (darkTheme) DarkColors else LightColors, typography = typography) {
+        CompositionLocalProvider(
+            LocalAppSettings provides AppSettings(themeMode, readerFontScale, fontFamilyName) { mode, scale, selectedFamily ->
+                themeMode = mode
+                readerFontScale = scale
+                fontFamilyName = selectedFamily
+                store.themeMode = mode
+                store.readerFontScale = scale
+                store.fontFamilyName = selectedFamily
             }
+        ) {
+            content()
         }
     }
 }
 
 private fun storeFontFamily(name: String) = when (name) {
-    "Serif" -> androidx.compose.ui.text.font.FontFamily.Serif
-    "Mono" -> androidx.compose.ui.text.font.FontFamily.Monospace
-    "Cursive" -> androidx.compose.ui.text.font.FontFamily.Cursive
-    else -> androidx.compose.ui.text.font.FontFamily.SansSerif
+    "Serif" -> FontFamily.Serif
+    "Mono" -> FontFamily.Monospace
+    "Cursive" -> FontFamily.Cursive
+    else -> FontFamily.SansSerif
 }
