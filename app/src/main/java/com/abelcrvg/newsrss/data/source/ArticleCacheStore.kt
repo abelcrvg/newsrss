@@ -28,7 +28,11 @@ class ArticleCacheStore(context: Context) {
             urls.remove(article.url)
             urls.add(article.url)
             val evicted = mutableListOf<String>()
-            while (urls.size > MAX_ARTICLES) evicted.add(urls.remove(urls.first()))
+            while (urls.size > MAX_ARTICLES) {
+                val oldest = urls.first()
+                urls.remove(oldest)
+                evicted.add(oldest)
+            }
             val next = JSONArray()
             urls.forEach { next.put(it) }
             prefs.edit()

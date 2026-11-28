@@ -31,10 +31,7 @@ fun NewsRSSSettingsButton() {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }) { Text("⚙", fontSize = 22.sp) }
     if (open) {
-        NewsRSSSettingsDialog(settings) { mode, scale, family ->
-            settings.onChanged(mode, scale, family)
-            open = false
-        }
+        NewsRSSSettingsDialog(settings) { open = false }
     }
 }
 

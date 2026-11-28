@@ -53,7 +53,8 @@ private val DarkColors = darkColorScheme(
 
 @Composable
 fun NewsRSSTheme(content: @Composable () -> Unit) {
-    val store = remember { SettingsStore(LocalContext.current) }
+    val context = LocalContext.current
+    val store = remember { SettingsStore(context) }
     var themeMode by remember { mutableStateOf(store.themeMode) }
     var readerFontScale by remember { mutableStateOf(store.readerFontScale) }
     var fontFamilyName by remember { mutableStateOf(store.fontFamilyName) }
